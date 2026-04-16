@@ -1,5 +1,164 @@
-# Vue 3 + Vite
+# hj-vue-chatbot
 
-This template should help get you started developing with Vue 3 in Vite. The template uses Vue 3 `<script setup>` SFCs, check out the [script setup docs](https://v3.vuejs.org/api/sfc-script-setup.html#sfc-script-setup) to learn more.
+基于 Vue 3 + Vite 8 的可嵌入 Web 聊天机器人 UI，支持多模式交互（智能客服 / 文件转换 / 人才发展 / 员工自助），通过 SSE 流式响应与后端 AI 智能体通信。
 
-Learn more about IDE Support for Vue in the [Vue Docs Scaling up Guide](https://vuejs.org/guide/scaling-up/tooling.html#ide-support).
+## 功能特性
+
+- **智能对话** — 支持 Markdown 渲染、代码高亮、消息反馈（复制/赞/踩/重新生成）
+- **多模式切换** — 快捷按钮一键切换：智能客服、文件转换、人才发展、员工自助
+- **会话管理** — 新建/切换/删除会话，localStorage 持久化
+- **文件转换** — 拖拽上传 → 状态轮询 → 流式提取 → 左右分栏预览编辑 → 确认提交
+- **员工自助** — 自然语言意图识别，交互式卡片（请假/薪酬/个人信息/申请记录）
+- **响应式布局** — 小窗口 380x520px / 最大化 90vw x 90vh / 移动端全屏
+
+## 技术栈
+
+| 类别 | 技术 |
+|---|---|
+| 前端框架 | Vue 3（Composition API + `<script setup>`） |
+| 构建工具 | Vite 8 |
+| UI 库 | Element Plus |
+| 状态管理 | Pinia |
+| HTTP 请求 | Axios（普通请求）+ fetch（流式响应） |
+| Markdown 渲染 | markdown-it |
+| 代码高亮 | highlight.js |
+
+## 快速开始
+
+```bash
+# 安装依赖
+npm install
+
+# 启动开发服务器
+npm run dev
+
+# 生产构建
+npm run build
+
+# 预览构建结果
+npm run preview
+```
+
+开发服务器默认运行在 `http://localhost:5173`。
+
+## 部署
+
+### Nginx 配置
+
+前端通过 Nginx 代理访问，后端 API 通过同一域名转发：
+
+```nginx
+# 前端
+location /chatbotui {
+    proxy_pass http://localhost:5173;
+}
+
+# 后端 API
+location / {
+    proxy_pass http://localhost:8088;
+}
+```
+
+### Vite 配置
+
+```js
+export default defineConfig({
+  base: '/chatbotui',   // 必须匹配 Nginx location 路径
+  server: { port: 5173 },
+})
+```
+
+前端 `baseURL` 设为空字符串（相对路径），请求 `/ai/api/...` 由 Nginx 的 `location /` 自动转发到后端。
+
+## 全局配置
+
+通过 `index.html` 中的 `window.CHATBOT_CONFIG` 注入配置：
+
+```js
+window.CHATBOT_CONFIG = {
+  baseUrl: '',              // API 基础地址，默认空字符串（由 Nginx 代理）
+  title: 'AI 助手',         // 窗口标题
+  greeting: '你好！...',    // 问候语
+  token: '',                // 认证 token
+  avatars: {                // 各模式头像 URL
+    customerService: '',
+    fileConvert: '',
+    talentAgent: '',
+    employeeSelf: '',
+  },
+  allowedFileTypes: ['.pdf', '.doc', '.docx'],  // 允许上传的文件类型
+  maxFileSize: 50 * 1024 * 1024,                // 最大文件大小（50MB）
+  quickActions: [           // 快捷操作按钮
+    { label: '人才发展', mode: 'talent_agent' },
+    { label: '文件转换', mode: 'file_convert' },
+    { label: '员工自助', mode: 'employee_self' },
+  ],
+  mockExtract: false,       // 是否使用模拟数据（调试用）
+}
+```
+
+## 项目结构
+
+```
+src/
+├── main.js                          # 入口文件
+├── App.vue                          # 根组件
+├── style.css                        # 全局样式
+├── api/
+│   ├── request.js                   # Axios 基础配置
+│   ├── chat.js                      # 聊天消息接口
+│   ├── file.js                      # 文件上传/状态/提取/转换接口
+│   └── agent.js                     # 人才发展智能体接口
+├── components/
+│   ├── ChatbotContainer.vue         # 聊天窗口容器（显示/隐藏/最大化/侧边栏/分栏）
+│   ├── Chatbot.vue                  # 聊天核心（消息列表/输入框/发送/停止/快捷按钮）
+│   ├── MessageBubble.vue            # 消息气泡（Markdown/反馈/卡片）
+│   ├── SessionList.vue              # 会话列表侧边栏
+│   ├── FileUpload.vue               # 文件上传面板
+│   ├── FileExtractStatus.vue        # 文件提取加载指示器
+│   └── FilePreview.vue              # 可编辑的文件数据预览
+├── stores/
+│   ├── chat.js                      # 聊天状态（消息/流式/中断）
+│   ├── session.js                   # 会话管理（列表/切换/持久化）
+│   ├── file.js                      # 文件处理（上传/轮询/提取）
+│   └── mode.js                      # 模式管理（客服/文件转换/人才发展/员工自助）
+├── utils/
+│   ├── stream.js                    # SSE 流式响应处理
+│   ├── markdown.js                  # Markdown 渲染 + 代码高亮
+│   ├── jsonParser.js                # 从 Markdown 中提取 JSON
+│   ├── normalizeExtractData.js      # 中文 key 转英文 key
+│   └── storage.js                   # localStorage 封装
+├── mock/
+│   └── extractData.js               # 模拟文件提取数据
+└── config/
+    └── index.js                     # window.CHATBOT_CONFIG 解析
+```
+
+## 架构说明
+
+### 流式响应
+
+后端 Spring MVC 通过 `ResponseBodyEmitter` 返回 SSE 格式数据，前端基于 `fetch` + `ReadableStream` 处理：
+
+```
+data:{"output":{"text":"增量文本","finish_reason":null},"request_status":false}
+```
+
+后端配置 `.incrementalOutput(true)` 返回增量文本，前端通过 `chatStore.appendStreamContent()` 追加拼接。
+
+### 多模式路由
+
+| 模式 | 用户发送消息时 | 接口 |
+|---|---|---|
+| 智能客服 | 正常后端请求 | `/ai/api/chatbot/chat` |
+| 人才发展 | 正常后端请求 | `/ai/api/person/post/match` |
+| 文件转换 | 正常聊天 + 文件处理 | `/ai/api/chatbot/chat` |
+| 员工自助 | 本地拦截，不请求后端 | 意图识别 + mock 卡片 |
+
+### 文件转换流程
+
+上传文件 → 轮询文件状态（每 2 秒，最多 60 次） → 流式提取结构化数据 → 左右分栏预览编辑 → 确认提交
+
+## 许可证
+
+MIT
