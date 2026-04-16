@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI 助手</title>
+  </head>
+  <body>
+    <div id="ballChat"></div>
+    <script>
+      window.CHATBOT_CONFIG = {
+        baseUrl: '',  // 使用相对路径，由 Nginx 代理转发
+        title: '数智小宏',
+        greeting: '你好！我是数智员工 小宏，有什么可以帮助你的吗？',
+        token: '',
+        avatars: {
+          customerService: '',
+          fileConvert: '',
+          talentAgent: '',
+          employeeSelf: '',
+        },
+        allowedFileTypes: [
+          '.pdf', '.doc', '.docx', '.xls', '.xlsx',
+          '.txt', '.csv', '.png', '.jpg', '.jpeg',
+        ],
+        maxFileSize: 50 * 1024 * 1024, // 50MB
+        dataProcessors: [],
+        quickActions: [
+          { label: '文件转换', mode: 'file_convert' },
+          { label: '员工自助', mode: 'employee_self' },
+          { label: '人才发展', mode: 'talent_agent' },
+        ],
+        mockExtract: true, // 调试：使用模拟数据，不走真实提取接口
+      }
+    </script>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
