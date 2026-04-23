@@ -25,10 +25,15 @@ const greeting = config.greeting || '你好！我是 AI 助手，有什么可以
 
 const streamingHtml = computed(() => renderMarkdown(chatStore.currentStreamContent))
 
-// 初始化会话
+// 初始化会话（由父组件 ChatbotContainer 负责加载）
 onMounted(() => {
-  if (!sessionStore.currentSessionId) {
-    sessionStore.initSession()
+  // 会话列表已由父组件初始化
+})
+
+// 监听历史消息加载完成，滚动到底部
+watch(() => chatStore.messages.length, (newLen) => {
+  if (newLen > 0) {
+    scrollToBottom()
   }
 })
 
@@ -104,6 +109,20 @@ async function handleSend() {
     return
   }
 
+  // 如果当前没有会话，自动创建
+  if (!sessionStore.currentSessionId) {
+    const title = content.length > 10 ? content.substring(0, 10) : content
+    const session = await sessionStore.createSession(title)
+    if (!session) {
+      chatStore.addMessage({
+        role: 'system',
+        content: '创建会话失败，请稍后重试',
+      })
+      scrollToBottom()
+      return
+    }
+  }
+
   // 创建 AI 回复占位消息
   chatStore.setStreaming(true)
   chatStore.setStreamContent('')
@@ -116,7 +135,7 @@ async function handleSend() {
     : `${apiUrl}/ai/api/chatbot/chat`
 
   console.log('[Chatbot] Request URL:', url)
-  console.log('[Chatbot] Request body:', JSON.stringify({ prompt: content, sessionId: sessionStore.currentSessionId }))
+  console.log('[Chatbot] Request body:', JSON.stringify({ prompt: content, sessionId: sessionStore.currentSessionId, chatSessionId: sessionStore.currentSessionId }))
 
   const controller = createStreamRequest(
     url,
@@ -126,6 +145,7 @@ async function handleSend() {
       body: JSON.stringify({
         prompt: content,
         sessionId: sessionStore.currentSessionId,
+        chatSessionId: sessionStore.currentSessionId,
       }),
     },
     {

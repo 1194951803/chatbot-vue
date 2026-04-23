@@ -35,7 +35,8 @@ src/
 │   ├── request.js                   # Axios 基础配置（baseURL 为空，由 Nginx 代理）
 │   ├── chat.js                      # 聊天消息接口
 │   ├── file.js                      # 文件上传/状态/提取/转换接口
-│   └── agent.js                     # 人才发展智能体接口
+│   ├── agent.js                     # 人才发展智能体接口
+│   └── session.js                   # 会话管理接口（列表/创建/删除/历史）
 ├── components/
 │   ├── ChatbotContainer.vue         # 聊天窗口容器（显示/隐藏/最大化/侧边栏/分栏布局）
 │   ├── Chatbot.vue                  # 聊天核心（消息列表、输入框、发送/停止、快捷按钮）
@@ -45,16 +46,15 @@ src/
 │   ├── FileExtractStatus.vue        # 文件提取加载指示器（旋转动画）
 │   └── FilePreview.vue              # 可编辑的文件数据预览（表单/表格/textarea 渲染）
 ├── stores/
-│   ├── chat.js                      # 聊天状态（消息列表、流式响应、中断控制）
-│   ├── session.js                   # 会话管理（列表、切换、localStorage 持久化）
+│   ├── chat.js                      # 聊天状态（消息列表、流式响应、中断控制、历史消息加载）
+│   ├── session.js                   # 会话管理（后端 API 对接：列表/创建/删除/历史加载）
 │   ├── file.js                      # 文件处理（上传进度、状态轮询、提取状态、上传记录）
 │   └── mode.js                      # 模式管理（客服/文件转换/人才发展）
 ├── utils/
 │   ├── stream.js                    # SSE 流式响应处理（fetch + ReadableStream）
 │   ├── markdown.js                  # Markdown 渲染 + 代码高亮
 │   ├── jsonParser.js                # 从 Markdown 中提取并解析 JSON 代码块
-│   ├── normalizeExtractData.js      # 将中文 key 的数据结构标准化为英文 key
-│   └── storage.js                   # localStorage 封装
+│   └── normalizeExtractData.js      # 将中文 key 的数据结构标准化为英文 key
 ├── mock/
 │   └── extractData.js               # 模拟文件提取数据（调试用）
 └── config/
@@ -113,8 +113,8 @@ data:{"output":{"text":"增量文本","finish_reason":null},"request_status":fal
 
 | Store | 职责 |
 |---|---|
-| `chatStore` | 消息列表、流式响应状态（isStreaming）、流式内容（currentStreamContent）、中断控制（abortController/abortStream）、`appendStreamContent` 追加增量 |
-| `sessionStore` | 会话列表、当前会话 ID、新建/切换/删除、localStorage 持久化 |
+| `chatStore` | 消息列表、流式响应状态（isStreaming）、流式内容（currentStreamContent）、中断控制（abortController/abortStream）、`appendStreamContent` 追加增量、`loadHistoryMessages` 加载历史消息 |
+| `sessionStore` | 会话列表（后端分页加载）、当前会话 ID、新建/切换/删除、历史消息加载 |
 | `fileStore` | 文件上传进度、状态轮询、文件提取状态（isExtracting/extractedData/previewMode）、上传记录列表（fileRecords） |
 | `modeStore` | 当前模式（MODES 常量：customer_service/file_convert/talent_agent/employee_self）、头像切换 |
 
@@ -132,7 +132,7 @@ data:{"output":{"text":"增量文本","finish_reason":null},"request_status":fal
 
 - 发送：Enter 键或点击发送按钮，Shift+Enter 换行。
 - 模式路由：人才发展模式（`talent_agent`）走 `/ai/api/person/post/match`，普通模式走 `/ai/api/chatbot/chat`，员工自助模式（`employee_self`）不请求后端，本地意图识别 + mock 卡片响应。
-- 请求参数：`{ prompt: content, sessionId: sessionId }`（注意是 `prompt` 字段，不是 `message`）。
+- 请求参数：`{ prompt: content, sessionId: sessionId, chatSessionId: sessionId }`（注意是 `prompt` 字段，不是 `message`）。
 
 ### 文件转换流程
 
@@ -262,11 +262,15 @@ AI 回复完成后（非流式中）显示反馈工具栏：
 
 ### 会话管理
 
-- **新建会话**：创建带时间戳的会话 ID，标题为"新会话"，添加到列表首位
-- **切换会话**：切换 `currentSessionId`，清空当前消息
-- **删除会话**：从列表中移除，若删除的是当前会话则自动切换到第一个
-- **持久化**：`localStorage` 存储，key 为 `chatbot_sessions`
-- **历史加载**：切换会话时仅清空当前消息，TODO 需从后端加载历史
+- **初始化**：`ChatbotContainer` 挂载时调用 `sessionStore.init()` 加载后端会话列表，默认选中第一个，并调用 `loadHistory` 加载该会话历史消息，`chatStore.loadHistoryMessages()` 将后端 `[{ question, answer, rating, createTs }]` 格式映射为前端消息格式
+- **新建会话**：`Chatbot.vue` `handleSend` 中检测 `currentSessionId` 为空时，自动调用 `sessionStore.createSession()`，取用户输入前 10 个字符作为标题
+- **切换会话**：`handleSelectSession` 调用 `sessionStore.switchSession(id)`，清空当前消息，加载该会话历史消息
+- **删除会话**：调用后端 `DELETE /ai/api/chat/session/{id}`，从本地列表中移除
+- **请求参数**：聊天/人才发展接口请求体新增 `chatSessionId` 字段，关联到 `ai_chat_session` 表的 UUID
+- **后端字段映射**：后端返回的会话对象使用 `uuid` 字段（不是 `id`），前端映射为 `id`；时间字段 `createTs` → `createdAt`，`modifyTs` → `updatedAt`
+- **响应格式兼容**：`extractData()` 函数兼容后端 `{ code: 200, data: {...} }` 包装格式和直接返回对象两种格式
+- **自动滚动**：`Chatbot.vue` 中 `watch` 监听 `chatStore.messages.length`，历史消息加载完成后自动滚动到最底部
+- **SessionList 时间显示**：优先使用 `updatedAt`（后端 `modifyTs`），无修改记录时使用 `createdAt`
 
 ### 窗口适配
 
@@ -289,6 +293,10 @@ AI 回复完成后（非流式中）显示反馈工具栏：
 | `/ai/api/file/status` | 文件状态查询（POST，body 为 fileId 字符串） | 已对接 |
 | `/ai/api/stream/analysis/extract` | 文件内容提取（SSE 流式） | 已对接 |
 | `/ai/api/file/confirm` | 确认提交文件数据 | 已对接 |
+| `/ai/api/chat/session/list` | 会话列表（分页） | 已对接 |
+| `/ai/api/chat/session` | 新建会话 | 已对接 |
+| `/ai/api/chat/session/{id}` | 删除会话 | 已对接 |
+| `/ai/api/chat/session/{id}/messages` | 历史消息查询 | 已对接 |
 | `/ai/api/file/excel` | 文件转 Excel 下载 | 待对接 |
 | `/ai/api/chatbot/feedback` | 消息反馈上报（赞/踩） | 待对接 |
 

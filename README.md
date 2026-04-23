@@ -1,4 +1,4 @@
-# hj-vue-chatbot
+# vue-chatbot
 
 基于 Vue 3 + Vite 8 的可嵌入 Web 聊天机器人 UI，支持多模式交互（智能客服 / 文件转换 / 人才发展 / 员工自助），通过 SSE 流式响应与后端 AI 智能体通信。
 

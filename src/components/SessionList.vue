@@ -13,6 +13,7 @@ const emit = defineEmits(['select', 'new', 'delete'])
 
 const sessionStore = useSessionStore()
 const sessions = computed(() => sessionStore.sessions)
+const isLoading = computed(() => sessionStore.isLoading)
 
 function handleNew() {
   emit('new')
@@ -28,7 +29,9 @@ function handleDelete(id, e) {
 }
 
 function formatTime(dateStr) {
-  const date = new Date(dateStr)
+  if (!dateStr) return ''
+  // 后端格式 "2026-04-20 10:30:00"
+  const date = new Date(dateStr.replace(' ', 'T'))
   const now = new Date()
   const diff = now - date
   if (diff < 60 * 1000) return '刚刚'
@@ -54,13 +57,16 @@ function formatTime(dateStr) {
       >
         <div class="session-info">
           <span class="session-name">{{ session.title }}</span>
-          <span class="session-time">{{ formatTime(session.createdAt) }}</span>
+          <span class="session-time">{{ formatTime(session.updatedAt || session.createdAt) }}</span>
         </div>
         <button class="delete-btn" @click="handleDelete(session.id, $event)">
           &times;
         </button>
       </div>
-      <div v-if="sessions.length === 0" class="session-empty">
+      <div v-if="isLoading" class="session-empty">
+        加载中...
+      </div>
+      <div v-else-if="sessions.length === 0" class="session-empty">
         暂无会话
       </div>
     </div>

@@ -28,8 +28,17 @@ const showUploadPanel = ref(false)
 const config = getConfig()
 const isMockMode = config.mockExtract
 
-onMounted(() => {
+// 初始化：加载会话列表并加载第一个会话的历史消息
+onMounted(async () => {
   visible.value = true
+  await sessionStore.init()
+  // 如果有选中的会话，加载其历史消息
+  if (sessionStore.currentSessionId) {
+    const history = await sessionStore.loadHistory(sessionStore.currentSessionId)
+    if (history && history.length > 0) {
+      chatStore.loadHistoryMessages(history)
+    }
+  }
 })
 
 // 监听 previewMode 自动最大化
@@ -69,25 +78,30 @@ function toggleSidebar() {
   showSidebar.value = !showSidebar.value
 }
 
-function handleNewSession() {
+async function handleNewSession() {
   chatStore.clearMessages()
-  sessionStore.createSession()
+  const session = await sessionStore.createSession('新会话')
+  if (!session) return
   if (!isMaximized.value) {
     showSidebar.value = false
   }
 }
 
-function handleSelectSession(id) {
+async function handleSelectSession(id) {
   sessionStore.switchSession(id)
   chatStore.clearMessages()
-  // TODO: 加载该会话的历史消息
+  // 加载该会话的历史消息
+  const history = await sessionStore.loadHistory(id)
+  if (history && history.length > 0) {
+    chatStore.loadHistoryMessages(history)
+  }
   if (!isMaximized.value) {
     showSidebar.value = false
   }
 }
 
-function handleDeleteSession(id) {
-  sessionStore.deleteSession(id)
+async function handleDeleteSession(id) {
+  await sessionStore.deleteSession(id)
   chatStore.clearMessages()
 }
 
