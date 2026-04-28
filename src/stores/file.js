@@ -1,143 +1,157 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 
 export const useFileStore = defineStore('file', () => {
+  // 上传级别状态（保留）
   const uploadProgress = ref(0)
   const isUploading = ref(false)
   const isProcessing = ref(false)
-  const processStatus = ref('') // 'uploading' | 'parsing' | 'completed' | 'failed'
+  const processStatus = ref('')
   const currentFile = ref(null)
   const errorMessage = ref('')
   const downloadUrl = ref('')
-  let statusPollTimer = null
 
-  // 文件提取相关状态
-  const fileId = ref('')
-  const extractedData = ref(null)
-  const isExtracting = ref(false)
-  const extractError = ref('')
-  const previewMode = ref(false) // 是否进入左右分栏预览模式
-  const fileStatus = ref('') // 文件处理状态: INIT/PARSING/PARSE_SUCCESS/FILE_IS_READY 等
-  const statusMessage = ref('') // 用户可见的状态提示文本
-  const fileRecords = ref([]) // 已上传文件记录列表
-  let extractController = null
-  let fileStatusPollTimer = null
+  // 文件记录列表（主要数据源）
+  // 每条记录：{ fileId, fileName, uploadTime, fileStatus, statusMessage, extractedData, isExtracting, extractError }
+  const fileRecords = ref([])
 
-  function setUploadProgress(val) {
-    uploadProgress.value = val
+  // 当前预览面板显示的文件 ID（替代原 previewMode boolean）
+  const activePreviewFileId = ref('')
+
+  // 每文件独立管理的 poll 定时器和提取 controller
+  const fileStatusPollTimers = new Map()
+  const extractControllers = new Map()
+
+  /**
+   * 根据 fileId 查找记录
+   */
+  function getFileRecord(fileId) {
+    return fileRecords.value.find((r) => r.fileId === fileId)
   }
 
-  function setUploading(val) {
-    isUploading.value = val
+  /**
+   * 获取当前正在预览的文件记录
+   */
+  const activeFileRecord = computed(() => {
+    if (!activePreviewFileId.value) return null
+    return fileRecords.value.find((r) => r.fileId === activePreviewFileId.value)
+  })
+
+  /**
+   * 添加文件记录
+   */
+  function addFileRecord(record) {
+    fileRecords.value.push({
+      fileId: record.fileId,
+      fileName: record.fileName,
+      uploadTime: record.uploadTime || new Date().toLocaleString('zh-CN'),
+      fileStatus: record.fileStatus || 'INIT',
+      statusMessage: record.statusMessage || '',
+      extractedData: record.extractedData || null,
+      isExtracting: false,
+      extractError: '',
+      ...record, // 允许覆盖
+    })
   }
 
-  function setProcessing(val) {
-    isProcessing.value = val
+  /**
+   * 更新指定 fileId 的记录（合并更新）
+   */
+  function updateFileRecord(fileId, updates) {
+    const record = getFileRecord(fileId)
+    if (record) {
+      Object.assign(record, updates)
+    }
   }
 
-  function setProcessStatus(status) {
-    processStatus.value = status
+  /**
+   * 设置当前预览的文件
+   */
+  function setActivePreviewFileId(fileId) {
+    activePreviewFileId.value = fileId
   }
 
-  function setCurrentFile(file) {
-    currentFile.value = file
+  /**
+   * 关闭预览面板
+   */
+  function clearActivePreview() {
+    // 中断当前文件的提取
+    if (extractControllers.has(activePreviewFileId.value)) {
+      extractControllers.get(activePreviewFileId.value).abort()
+      extractControllers.delete(activePreviewFileId.value)
+    }
+    activePreviewFileId.value = ''
   }
 
-  function setErrorMessage(msg) {
-    errorMessage.value = msg
+  /**
+   * 是否所有文件都已提取完成
+   */
+  function areAllFilesExtracted() {
+    return fileRecords.value.length > 0 && fileRecords.value.every((r) => r.extractedData !== null)
   }
 
-  function setDownloadUrl(url) {
-    downloadUrl.value = url
-  }
-
-  function startStatusPoll(fileId, checkFn, interval = 2000) {
-    stopStatusPoll()
-    statusPollTimer = setInterval(async () => {
+  /**
+   * 启动文件状态轮询（per-file）
+   */
+  function startFileStatusPoll(fileId, checkFn, interval = 2000) {
+    stopFileStatusPoll(fileId)
+    const timer = setInterval(async () => {
       try {
-        const result = await checkFn(fileId)
-        if (result?.status === 'completed') {
-          setProcessStatus('completed')
-          setProcessing(false)
-          stopStatusPoll()
-        } else if (result?.status === 'failed') {
-          setProcessStatus('failed')
-          setProcessing(false)
-          setErrorMessage(result.message || '文件处理失败')
-          stopStatusPoll()
-        } else {
-          setProcessStatus('parsing')
-        }
+        const status = await checkFn(fileId)
+        const normalizedStatus = typeof status === 'string' ? status.trim() : String(status)
+        updateFileRecord(fileId, { fileStatus: normalizedStatus })
       } catch {
         // 静默重试
       }
     }, interval)
+    fileStatusPollTimers.set(fileId, timer)
   }
 
-  function stopStatusPoll() {
-    if (statusPollTimer) {
-      clearInterval(statusPollTimer)
-      statusPollTimer = null
+  /**
+   * 停止指定文件的轮询
+   */
+  function stopFileStatusPoll(fileId) {
+    if (fileStatusPollTimers.has(fileId)) {
+      clearInterval(fileStatusPollTimers.get(fileId))
+      fileStatusPollTimers.delete(fileId)
     }
   }
 
-  function setFileId(id) {
-    fileId.value = id
+  /**
+   * 停止所有文件的轮询
+   */
+  function stopAllFileStatusPolls() {
+    fileStatusPollTimers.forEach((timer) => clearInterval(timer))
+    fileStatusPollTimers.clear()
   }
 
-  function setExtractedData(data) {
-    extractedData.value = data
+  /**
+   * 注册文件提取的 AbortController
+   */
+  function registerExtractController(fileId, controller) {
+    extractControllers.set(fileId, controller)
   }
 
-  function setExtracting(val) {
-    isExtracting.value = val
-  }
-
-  function setExtractError(msg) {
-    extractError.value = msg
-  }
-
-  function stopFileStatusPoll() {
-    if (fileStatusPollTimer) {
-      clearInterval(fileStatusPollTimer)
-      fileStatusPollTimer = null
+  /**
+   * 中断指定文件的提取
+   */
+  function abortFileExtraction(fileId) {
+    if (extractControllers.has(fileId)) {
+      extractControllers.get(fileId).abort()
+      extractControllers.delete(fileId)
     }
   }
 
-  function setFileStatus(status) {
-    fileStatus.value = status
-  }
-
-  function setStatusMessage(msg) {
-    statusMessage.value = msg
-  }
-
-  function setPreviewMode(val) {
-    previewMode.value = val
-  }
-
-  function addFileRecord(record) {
-    fileRecords.value.push({
-      ...record,
-      uploadTime: record.uploadTime || new Date().toLocaleString('zh-CN'),
-    })
-  }
-
-  function removeFileRecord(index) {
-    fileRecords.value.splice(index, 1)
-  }
-
-  function abortExtraction() {
-    if (extractController) {
-      extractController.abort()
-      extractController = null
-    }
-  }
-
+  /**
+   * 重置（保留上传历史）
+   */
   function reset() {
     fullReset()
   }
 
+  /**
+   * 完全重置（清空所有状态，包括文件记录）
+   */
   function fullReset() {
     uploadProgress.value = 0
     isUploading.value = false
@@ -146,17 +160,13 @@ export const useFileStore = defineStore('file', () => {
     currentFile.value = null
     errorMessage.value = ''
     downloadUrl.value = ''
-    stopStatusPoll()
-    stopFileStatusPoll()
-    fileId.value = ''
-    extractedData.value = null
-    isExtracting.value = false
-    extractError.value = ''
-    previewMode.value = false
-    fileStatus.value = ''
-    statusMessage.value = ''
-    // 注意：不重置 fileRecords，保留上传历史
-    abortExtraction()
+    stopAllFileStatusPolls()
+    // 中断所有提取
+    extractControllers.forEach((c) => c.abort())
+    extractControllers.clear()
+    // 清空文件记录和预览状态
+    fileRecords.value = []
+    activePreviewFileId.value = ''
   }
 
   return {
@@ -167,34 +177,20 @@ export const useFileStore = defineStore('file', () => {
     currentFile,
     errorMessage,
     downloadUrl,
-    fileId,
-    extractedData,
-    isExtracting,
-    extractError,
-    previewMode,
-    fileStatus,
-    statusMessage,
     fileRecords,
-    setUploadProgress,
-    setUploading,
-    setProcessing,
-    setProcessStatus,
-    setCurrentFile,
-    setErrorMessage,
-    setDownloadUrl,
-    setFileId,
-    setExtractedData,
-    setExtracting,
-    setExtractError,
-    setPreviewMode,
-    setFileStatus,
-    setStatusMessage,
+    activePreviewFileId,
+    activeFileRecord,
+    getFileRecord,
     addFileRecord,
-    removeFileRecord,
-    abortExtraction,
-    startStatusPoll,
-    stopStatusPoll,
+    updateFileRecord,
+    setActivePreviewFileId,
+    clearActivePreview,
+    areAllFilesExtracted,
+    startFileStatusPoll,
     stopFileStatusPoll,
+    stopAllFileStatusPolls,
+    registerExtractController,
+    abortFileExtraction,
     reset,
     fullReset,
   }

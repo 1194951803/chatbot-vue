@@ -1,18 +1,15 @@
 <script setup>
-import { ref, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, watch, nextTick } from 'vue'
 import { useChatStore } from '../stores/chat'
 import { useSessionStore } from '../stores/session'
 import { useFileStore } from '../stores/file'
 import { useModeStore } from '../stores/mode'
-import { extractFileContent, confirmFileData, getFileStatus } from '../api/file'
-import { extractJsonFromMarkdown } from '../utils/jsonParser'
+import { confirmFileData, batchParseFiles, retryParseFile } from '../api/file'
 import normalizeExtractData from '../utils/normalizeExtractData'
-import mockExtractData from '../mock/extractData'
 import getConfig from '../config/index'
 import SessionList from './SessionList.vue'
 import Chatbot from './Chatbot.vue'
 import FileUpload from './FileUpload.vue'
-import FileExtractStatus from './FileExtractStatus.vue'
 import FilePreview from './FilePreview.vue'
 
 const chatStore = useChatStore()
@@ -23,16 +20,21 @@ const modeStore = useModeStore()
 const visible = ref(false)
 const isMaximized = ref(false)
 const showSidebar = ref(false)
-const showUploadPanel = ref(false)
 
 const config = getConfig()
-const isMockMode = config.mockExtract
 
-// 初始化：加载会话列表并加载第一个会话的历史消息
+// 状态映射：SSE 推送状态 → 用户可读提示
+const STATUS_MESSAGES = {
+  parsing: '正在解析文件内容...',
+  success: '文件解析完成',
+  failed: '文件解析失败',
+}
+
+// 初始化：加载会话列表
 onMounted(async () => {
   visible.value = true
   await sessionStore.init()
-  // 如果有选中的会话，加载其历史消息
+  // 加载第一个会话的历史消息
   if (sessionStore.currentSessionId) {
     const history = await sessionStore.loadHistory(sessionStore.currentSessionId)
     if (history && history.length > 0) {
@@ -42,29 +44,48 @@ onMounted(async () => {
 })
 
 // 监听 previewMode 自动最大化
-watch(() => fileStore.previewMode, (val) => {
-  isMaximized.value = val
+watch(() => fileStore.activePreviewFileId, (val) => {
+  isMaximized.value = !!val
 })
 
 // 监听文件转换模式切换
 watch(() => modeStore.currentMode, (mode) => {
   if (mode === modeStore.MODES.FILE_CONVERT) {
-    showUploadPanel.value = true
-    // 进入文件转换模式时自动最大化，并同时展开侧边栏
+    // 在聊天流中添加上传引导消息
+    chatStore.addMessage({
+      role: 'assistant',
+      content: '已进入文件转换模式。请上传需要转换的文件：',
+      time: getCurrentTime(),
+      noFeedback: true,
+    })
+    chatStore.addMessage({
+      role: 'assistant',
+      type: 'file_upload',
+      uploadPrompt: true,
+    })
+    scrollToBottom()
     isMaximized.value = true
     showSidebar.value = true
-  } else {
-    showUploadPanel.value = false
   }
 })
 
 // 最大化时自动展开侧边栏，还原时收起
 watch(isMaximized, (val) => {
-  // 只在非文件转换模式下才响应（文件转换模式已显式处理）
   if (modeStore.currentMode !== modeStore.MODES.FILE_CONVERT) {
     showSidebar.value = val
   }
 })
+
+function getCurrentTime() {
+  return new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+}
+
+function scrollToBottom() {
+  nextTick(() => {
+    const container = document.querySelector('.message-container')
+    if (container) container.scrollTop = container.scrollHeight
+  })
+}
 
 function toggle() {
   visible.value = !visible.value
@@ -105,220 +126,349 @@ async function handleDeleteSession(id) {
   chatStore.clearMessages()
 }
 
-// 状态映射：后端返回状态 → 用户可读提示
-const STATUS_MESSAGES = {
-  INIT: '文件已上传，等待解析...',
-  PARSING: '正在解析文件内容...',
-  PARSE_SUCCESS: '文件解析完成，准备提取...',
-  SAFE_CHECKING: '正在进行安全检测...',
-  SAFE_CHECK_FAILED: '安全检测失败',
-  INDEX_BUILDING: '正在构建索引...',
-  INDEX_BUILD_SUCCESS: '索引构建完成，准备提取...',
-  INDEX_BUILDING_FAILED: '索引构建失败',
-  FILE_IS_READY: '文件准备就绪，开始提取内容...',
-  FILE_EXPIRED: '文件已过期',
-  INDEX_DELETED: '文件索引已删除',
-  PARSE_FAILED: '文件解析失败',
-}
+// 上传完成 → 创建文件列表消息，调用批量解析 SSE 流
+function handleUploadComplete(result) {
+  const { uploaded, rejected } = result
+  if (uploaded.length === 0) return
 
-// 表示文件已就绪、可以继续处理的状态
-const READY_STATUSES = ['FILE_IS_READY', 'PARSE_SUCCESS', 'INDEX_BUILD_SUCCESS']
-// 表示失败的终态
-const FAILED_STATUSES = ['PARSE_FAILED', 'SAFE_CHECK_FAILED', 'INDEX_BUILDING_FAILED', 'FILE_EXPIRED', 'INDEX_DELETED']
-
-// 上传完成 → 记录到聊天 + 开始轮询文件状态
-function handleUploadComplete(fileId, fileName) {
-  // 关闭上传面板，后续由状态轮询接管
-  showUploadPanel.value = false
-
-  fileStore.setFileId(fileId)
-
-  // 添加文件上传记录到聊天消息
-  const uploadRecord = {
-    role: 'file_upload',
-    type: 'file_upload',
-    fileId,
-    fileName,
-    uploadTime: new Date().toLocaleString('zh-CN'),
-    status: 'uploaded', // uploaded -> extracted
+  // 创建 file_list 消息
+  const fileListMsg = {
+    role: 'assistant',
+    type: 'file_list',
+    files: uploaded.map((f, idx) => ({
+      index: idx + 1,
+      fileId: `file-${idx + 1}`,
+      fileName: f.fileName,
+      ossUrl: f.ossUrl,
+      uploadTime: new Date().toLocaleString('zh-CN'),
+      status: 'parsing',
+      fileStatus: 'parsing',
+      statusMessage: '已上传，准备解析...',
+      extractedData: null,
+      isExtracting: true,
+      extractError: '',
+    })),
+    rejected: rejected || [],
+    time: getCurrentTime(),
+    noFeedback: true,
   }
-  chatStore.addMessage(uploadRecord)
-  fileStore.addFileRecord({ fileId, fileName })
+  chatStore.addMessage(fileListMsg)
 
-  waitForFileReady(fileId)
+  // 同步到 fileStore
+  uploaded.forEach((f, idx) => {
+    fileStore.addFileRecord({
+      fileId: `file-${idx + 1}`,
+      fileName: f.fileName,
+      ossUrl: f.ossUrl,
+      fileStatus: 'uploading',
+      statusMessage: '已上传，准备解析...',
+    })
+  })
+
+  // 调用批量解析 SSE 流
+  startBatchParse(fileListMsg)
+  scrollToBottom()
 }
 
-// 轮询文件状态，直到就绪或失败
-function waitForFileReady(fileId, maxRetries = 60, interval = 2000) {
-  let retries = 0
+// 批量解析文件（SSE 流）
+let currentParseController = null
 
-  fileStore.setStatusMessage('正在检查文件状态...')
+function startBatchParse(fileListMsg) {
+  const parseFiles = fileListMsg.files.map((f) => ({
+    index: f.index,
+    fileName: f.fileName,
+    ossUrl: f.ossUrl,
+  }))
 
-  const pollTimer = setInterval(async () => {
-    retries++
+  updateFileInMessage(fileListMsg, null, {
+    fileStatus: 'parsing',
+    statusMessage: '正在解析文件内容...',
+  })
 
-    try {
-      const status = await getFileStatus(fileId)
-      console.log('[FileStatus] Poll', retries, '- status:', status)
+  currentParseController = batchParseFiles(parseFiles, {
+    onFile: (data) => {
+      const { index, fileName, success, structuredData, errorMessage } = data
+      const fileItem = fileListMsg.files.find((f) => f.index === index)
+      if (!fileItem) return
 
-      // 后端直接返回状态字符串
-      const normalizedStatus = typeof status === 'string' ? status.trim() : String(status)
-
-      fileStore.setFileStatus(normalizedStatus)
-      fileStore.setStatusMessage(STATUS_MESSAGES[normalizedStatus] || `文件处理中: ${normalizedStatus}`)
-
-      // 已就绪，开始提取
-      if (READY_STATUSES.includes(normalizedStatus)) {
-        clearInterval(pollTimer)
-        startExtraction(fileId)
-        return
+      if (success) {
+        const normalizedData = normalizeExtractData(structuredData)
+        updateFileInMessage(fileListMsg, fileItem.fileId, {
+          status: 'extracted',
+          fileStatus: 'success',
+          statusMessage: '文件解析完成',
+          extractedData: normalizedData,
+          isExtracting: false,
+        })
+        const record = fileStore.getFileRecord(fileItem.fileId)
+        if (record) {
+          fileStore.updateFileRecord(fileItem.fileId, {
+            fileStatus: 'success',
+            statusMessage: '文件解析完成',
+            extractedData: normalizedData,
+            isExtracting: false,
+          })
+        }
+      } else {
+        updateFileInMessage(fileListMsg, fileItem.fileId, {
+          status: 'failed',
+          fileStatus: 'failed',
+          statusMessage: '解析失败',
+          isExtracting: false,
+          extractError: errorMessage || '解析失败',
+        })
+        fileStore.updateFileRecord(fileItem.fileId, {
+          fileStatus: 'failed',
+          statusMessage: '解析失败',
+          isExtracting: false,
+          extractError: errorMessage || '解析失败',
+        })
       }
-
-      // 失败终态
-      if (FAILED_STATUSES.includes(normalizedStatus)) {
-        clearInterval(pollTimer)
-        fileStore.setExtracting(false)
-        fileStore.setExtractError(STATUS_MESSAGES[normalizedStatus] || `文件处理失败: ${normalizedStatus}`)
-        return
-      }
-
-      // 超时
-      if (retries >= maxRetries) {
-        clearInterval(pollTimer)
-        fileStore.setExtracting(false)
-        fileStore.setExtractError('文件处理超时，请稍后重试')
-      }
-    } catch (err) {
-      console.error('[FileStatus] Poll error:', err)
-      // 静默重试，不立即失败
-    }
-  }, interval)
+      scrollToBottom()
+    },
+    onDone: () => {
+      // done 事件到了，但可能还有文件没收到 file 事件（解析失败或被跳过）
+      // 标记所有仍在解析中的文件为失败
+      fileListMsg.files.forEach((f) => {
+        if (f.status === 'uploading' || f.fileStatus === 'parsing') {
+          updateFileInMessage(fileListMsg, f.fileId, {
+            status: 'failed',
+            fileStatus: 'failed',
+            statusMessage: '解析失败',
+            isExtracting: false,
+            extractError: '未收到解析结果',
+          })
+          fileStore.updateFileRecord(f.fileId, {
+            fileStatus: 'failed',
+            statusMessage: '解析失败',
+            isExtracting: false,
+            extractError: '未收到解析结果',
+          })
+        }
+      })
+      currentParseController = null
+      scrollToBottom()
+    },
+    onError: (err) => {
+      // 标记所有仍在解析中的文件为失败
+      fileListMsg.files.forEach((f) => {
+        if (f.status === 'uploading' || f.fileStatus === 'parsing') {
+          updateFileInMessage(fileListMsg, f.fileId, {
+            status: 'failed',
+            fileStatus: 'failed',
+            statusMessage: '解析失败',
+            isExtracting: false,
+            extractError: err.message || '解析请求异常',
+          })
+          fileStore.updateFileRecord(f.fileId, {
+            fileStatus: 'failed',
+            statusMessage: '解析失败',
+            isExtracting: false,
+            extractError: err.message || '解析请求异常',
+          })
+        }
+      })
+      currentParseController = null
+      scrollToBottom()
+    },
+  })
 }
 
-// 开始提取文件内容
-function startExtraction(fileId) {
-  fileStore.setExtracting(true)
-  fileStore.setExtractError('')
-  fileStore.setStatusMessage('正在提取文件内容...')
+// 单文件重试解析
+function handleFileRetry(file) {
+  if (!file.ossUrl) return
+  updateFileInMessage(null, file.fileId, {
+    status: 'uploading',
+    fileStatus: 'parsing',
+    statusMessage: '正在重新解析...',
+    isExtracting: true,
+    extractError: '',
+  })
+  fileStore.updateFileRecord(file.fileId, {
+    fileStatus: 'parsing',
+    statusMessage: '正在重新解析...',
+    isExtracting: true,
+    extractError: '',
+  })
 
-  // 模拟模式：直接使用本地 mock 数据
-  if (isMockMode) {
-    console.log('[Mock] Using mock extract data')
-    setTimeout(() => {
-      fileStore.setExtractedData(normalizeExtractData(mockExtractData))
-      fileStore.setExtracting(false)
-      fileStore.setStatusMessage('')
-
-      // 标记文件记录为已提取
-      const lastUploadRecord = chatStore.messages.slice().reverse().find(m => m.type === 'file_upload')
-      if (lastUploadRecord) {
-        lastUploadRecord.status = 'extracted'
-      }
-
-      fileStore.setPreviewMode(true)
-    }, 800)
-    return
-  }
-
-  let extractedText = ''
-
-  const controller = extractFileContent(
-    fileId,
+  retryParseFile(
+    { index: file.index || 1, fileName: file.fileName, ossUrl: file.ossUrl },
     {
-      onChunk(data) {
-        let text = ''
-        if (typeof data === 'string') {
-          text = data
-        } else if (data.output?.text !== undefined) {
-          text = data.output.text
+      onFile: (data) => {
+        const { success, structuredData, errorMessage } = data
+        if (success) {
+          const normalizedData = normalizeExtractData(structuredData)
+          updateFileInMessage(null, file.fileId, {
+            status: 'extracted',
+            fileStatus: 'success',
+            statusMessage: '文件解析完成',
+            extractedData: normalizedData,
+            isExtracting: false,
+          })
+          fileStore.updateFileRecord(file.fileId, {
+            fileStatus: 'success',
+            statusMessage: '文件解析完成',
+            extractedData: normalizedData,
+            isExtracting: false,
+          })
         } else {
-          text = data.content || data.text || data.delta || ''
+          updateFileInMessage(null, file.fileId, {
+            status: 'failed',
+            fileStatus: 'failed',
+            statusMessage: '解析失败',
+            isExtracting: false,
+            extractError: errorMessage || '解析失败',
+          })
+          fileStore.updateFileRecord(file.fileId, {
+            fileStatus: 'failed',
+            statusMessage: '解析失败',
+            isExtracting: false,
+            extractError: errorMessage || '解析失败',
+          })
         }
-
-        // 累计提取文本
-        extractedText += text
-
-        // 尝试解析 JSON
-        const parsed = extractJsonFromMarkdown(extractedText)
-        if (parsed) {
-          fileStore.setExtractedData(normalizeExtractData(parsed))
-        }
+        scrollToBottom()
       },
-      onDone() {
-        // 提取完成，如果还没解析成功，最后尝试一次
-        if (!fileStore.extractedData && extractedText) {
-          const parsed = extractJsonFromMarkdown(extractedText)
-          if (parsed) {
-            fileStore.setExtractedData(normalizeExtractData(parsed))
-          }
-        }
-        fileStore.setExtracting(false)
-        fileStore.setStatusMessage('')
-
-        // 标记文件记录为已提取
-        const lastUploadRecord = chatStore.messages.slice().reverse().find(m => m.type === 'file_upload')
-        if (lastUploadRecord) {
-          lastUploadRecord.status = 'extracted'
-        }
-
-        // 进入预览模式
-        if (fileStore.extractedData) {
-          fileStore.setPreviewMode(true)
-        }
-      },
-      onError(err) {
-        console.error('[Extract Error]', err)
-        fileStore.setExtracting(false)
-        fileStore.setExtractError(err.message || '提取失败')
+      onDone: () => {},
+      onError: (err) => {
+        updateFileInMessage(null, file.fileId, {
+          status: 'failed',
+          fileStatus: 'failed',
+          statusMessage: '解析失败',
+          isExtracting: false,
+          extractError: err.message || '重试异常',
+        })
+        fileStore.updateFileRecord(file.fileId, {
+          fileStatus: 'failed',
+          statusMessage: '解析失败',
+          isExtracting: false,
+          extractError: err.message || '重试异常',
+        })
+        scrollToBottom()
       },
     },
   )
-
-  // 存储 controller 用于中断
-  fileStore.extractController = controller
 }
 
-// 确认提交数据
-async function handleConfirmData(data) {
+// 更新 file_list 消息中指定文件的状态
+function updateFileInMessage(fileListMsg, fileId, updates) {
+  // 如果没传 fileListMsg，自动查找最近的一条 file_list 消息
+  const targetMsg = fileListMsg || chatStore.messages.value.slice().reverse().find((m) => m.type === 'file_list')
+  if (!targetMsg?.files) return
+  const file = targetMsg.files.find((f) => f.fileId === fileId)
+  if (file) {
+    Object.assign(file, updates)
+  }
+}
+
+// 确认提交单个文件
+async function handleConfirmSingle(data) {
   try {
-    await confirmFileData(data)
-    // 提交成功，退出预览模式
-    fileStore.setPreviewMode(false)
-    showUploadPanel.value = false
-    modeStore.switchMode(modeStore.MODES.CUSTOMER_SERVICE)
+    const record = fileStore.activeFileRecord
+    if (record) {
+      await confirmFileData({ ...data, fileId: record.fileId })
+      // 更新消息中的状态
+      const fileListMsg = chatStore.messages.value.slice().reverse().find((m) => m.type === 'file_list')
+      if (fileListMsg) {
+        updateFileInMessage(fileListMsg, record.fileId, { status: 'submitted' })
+      }
+    }
+    fileStore.clearActivePreview()
   } catch (err) {
     console.error('[Confirm Error]', err)
-    fileStore.setExtractError('提交失败：' + (err.message || ''))
+    fileStore.updateFileRecord(fileStore.activePreviewFileId, {
+      extractError: '提交失败：' + (err.message || ''),
+    })
+  }
+}
+
+// 确认提交全部文件
+async function handleConfirmAll(message) {
+  try {
+    for (const file of message.files) {
+      if (file.extractedData) {
+        await confirmFileData({ ...file.extractedData, fileId: file.fileId })
+        updateFileInMessage(message, file.fileId, { status: 'submitted' })
+        fileStore.updateFileRecord(file.fileId, { status: 'submitted' })
+      }
+    }
+    fileStore.clearActivePreview()
+    chatStore.addMessage({
+      role: 'assistant',
+      content: '全部文件已提交成功。',
+      time: getCurrentTime(),
+      noFeedback: true,
+    })
+    modeStore.switchMode(modeStore.MODES.CUSTOMER_SERVICE)
+    scrollToBottom()
+  } catch (err) {
+    console.error('[ConfirmAll Error]', err)
+    chatStore.addMessage({
+      role: 'system',
+      content: '部分文件提交失败：' + (err.message || ''),
+      time: getCurrentTime(),
+    })
   }
 }
 
 // 取消预览
 function handleCancelPreview() {
-  fileStore.setPreviewMode(false)
-  fileStore.fullReset()
-  showUploadPanel.value = false
-  modeStore.switchMode(modeStore.MODES.CUSTOMER_SERVICE)
+  fileStore.clearActivePreview()
 }
 
 // 取消上传
 function handleCancelUpload() {
+  // 中断正在进行的解析
+  if (currentParseController) {
+    currentParseController.abort()
+    currentParseController = null
+  }
   fileStore.fullReset()
-  showUploadPanel.value = false
   modeStore.switchMode(modeStore.MODES.CUSTOMER_SERVICE)
 }
 
-// 文件记录操作（重新上传 / 查看）
-function handleFileAction(message) {
-  if (message.status === 'uploaded') {
-    // 重新上传：删除该消息之后的所有消息，重新打开上传面板
-    const idx = chatStore.messages.indexOf(message)
-    if (idx >= 0) {
-      chatStore.messages.splice(idx + 1)
+// 文件列表操作
+function handleFileAction(action) {
+  if (action.type === 'upload-complete') {
+    handleUploadComplete(action.result)
+  } else if (action.type === 'cancel-upload') {
+    handleCancelUpload()
+  } else if (action.type === 'file-click') {
+    const file = action.file
+    if (file.status === 'extracted' && file.extractedData) {
+      // 打开预览
+      fileStore.setActivePreviewFileId(file.fileId)
+      isMaximized.value = true
+    } else if (file.extractError) {
+      // 重新解析
+      handleFileRetry(file)
     }
-    showUploadPanel.value = true
-    modeStore.switchMode(modeStore.MODES.FILE_CONVERT)
+  } else if (action.type === 'confirm-all') {
+    handleConfirmAll(action.message)
+  } else if (action.type === 'file_upload' || !action.type) {
+    // 兼容旧的 file_upload 消息点击（重新上传）
+    const msg = action.message || action
+    if (msg?.type === 'file_upload' && msg.status === 'uploaded') {
+      const idx = chatStore.messages.value.indexOf(msg)
+      if (idx >= 0) {
+        chatStore.messages.value.splice(idx + 1)
+      }
+      modeStore.switchMode(modeStore.MODES.FILE_CONVERT)
+    }
   }
 }
+
+// 计算当前正在预览的文件数据
+const activeFileData = computed(() => {
+  if (!fileStore.activePreviewFileId) return null
+  const record = fileStore.getFileRecord(fileStore.activePreviewFileId)
+  return record?.extractedData || null
+})
+
+const activeFileName = computed(() => {
+  if (!fileStore.activePreviewFileId) return ''
+  const record = fileStore.getFileRecord(fileStore.activePreviewFileId)
+  return record?.fileName || ''
+})
 </script>
 
 <template>
@@ -362,26 +512,6 @@ function handleFileAction(message) {
         @delete="handleDeleteSession"
       />
 
-      <!-- 上传中 / 提取中 → 覆盖层 -->
-      <div
-        v-if="showUploadPanel || fileStore.isExtracting || fileStore.statusMessage"
-        class="content-overlay"
-      >
-        <div class="overlay-content">
-          <!-- 文件转换模式 → 上传面板 -->
-          <FileUpload
-            v-if="showUploadPanel"
-            @upload-complete="handleUploadComplete"
-            @cancel="handleCancelUpload"
-          />
-          <!-- 提取中/等待文件就绪 → 加载指示器 -->
-          <FileExtractStatus
-            v-else
-            :message="fileStore.statusMessage"
-          />
-        </div>
-      </div>
-
       <!-- 始终展示的内容区（聊天 + 可选的文件预览） -->
       <div class="content-body">
         <!-- 聊天核心组件（始终存在） -->
@@ -389,10 +519,10 @@ function handleFileAction(message) {
           <Chatbot @file-action="handleFileAction" />
         </div>
         <!-- 文件预览编辑组件（有数据时才展示，与聊天区左右分屏） -->
-        <div v-if="fileStore.previewMode && fileStore.extractedData" class="preview-area">
+        <div v-if="fileStore.activePreviewFileId && activeFileData" class="preview-area">
           <FilePreview
-            :data="fileStore.extractedData"
-            @confirm="handleConfirmData"
+            :data="activeFileData"
+            @confirm="handleConfirmSingle"
             @cancel="handleCancelPreview"
           />
         </div>
@@ -513,28 +643,6 @@ function handleFileAction(message) {
   border-right: 1px solid #eee;
 }
 
-/* 覆盖层（上传中/提取中时覆盖整个内容区） */
-.content-overlay {
-  position: absolute;
-  inset: 0;
-  z-index: 20;
-  background: #fff;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  overflow: hidden;
-}
-
-/* 覆盖层内容容器，限制宽度并居中 */
-.overlay-content {
-  width: 100%;
-  max-width: 600px;
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-}
-
-/* 固定式侧边栏（最大化时）层级高于覆盖层 */
 .sidebar-overlay.sidebar-fixed {
   z-index: 25;
 }

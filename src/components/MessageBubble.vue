@@ -1,6 +1,8 @@
 <script setup>
 import { computed, ref } from 'vue'
 import { renderMarkdown } from '../utils/markdown'
+import FileListMessage from './FileListMessage.vue'
+import FileUpload from './FileUpload.vue'
 
 const props = defineProps({
   message: {
@@ -167,6 +169,25 @@ function getStatusType(status) {
 
         <div class="message-time">{{ message.time }}</div>
       </div>
+    </template>
+
+    <!-- 上传引导消息（内嵌上传区域）— 必须在 assistant 之前判断 -->
+    <template v-else-if="message.uploadPrompt">
+      <div class="upload-prompt-msg">
+        <FileUpload
+          @upload-complete="$emit('file-action', { type: 'upload-complete', result: $event })"
+          @cancel="$emit('file-action', { type: 'cancel-upload' })"
+        />
+      </div>
+    </template>
+
+    <!-- 文件列表消息（批量上传）— 必须在 assistant 之前判断，因为 file_list 消息也有 role: 'assistant' -->
+    <template v-else-if="message.type === 'file_list'">
+      <FileListMessage
+        :message="message"
+        @file-click="$emit('file-action', { type: 'file-click', file: $event, message })"
+        @confirm-all="$emit('file-action', { type: 'confirm-all', message })"
+      />
     </template>
 
     <!-- AI 回复 -->
@@ -414,6 +435,26 @@ function getStatusType(status) {
   border-radius: 10px;
   max-width: 85%;
   min-width: 220px;
+}
+
+/* 上传引导消息（内嵌上传区域） */
+.upload-prompt-msg {
+  max-width: 600px;
+  min-width: 320px;
+  min-height: 300px;
+  height: 300px;
+  background: #fff;
+  border: 1px solid #e8e8e8;
+  border-radius: 10px;
+}
+
+.upload-prompt-msg :deep(.file-upload) {
+  padding: 12px;
+  height: 100%;
+}
+
+.upload-prompt-msg :deep(.upload-area) {
+  min-height: 0;
 }
 
 .file-icon {

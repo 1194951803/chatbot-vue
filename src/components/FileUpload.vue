@@ -1,23 +1,24 @@
 <script setup>
 import { ref, computed } from 'vue'
 import { useFileStore } from '../stores/file'
-import { useModeStore } from '../stores/mode'
+import { getStsToken, uploadFileToOss } from '../api/file'
 import getConfig from '../config/index'
-import { uploadFile, getFileStatus } from '../api/file'
 
 const emit = defineEmits(['upload-complete', 'cancel'])
 
 const fileStore = useFileStore()
-const modeStore = useModeStore()
 const config = getConfig()
 
 const allowedFileTypes = config.allowedFileTypes
 const maxFileSize = config.maxFileSize
 
 const isDragging = ref(false)
-const errorMessage = ref('')
+const errorMessages = ref([])
+const uploadError = ref('')
 
-const currentModeAvatar = computed(() => modeStore.getCurrentAvatar())
+const currentModeAvatar = computed(() => {
+  return ''
+})
 
 function handleDragOver(e) {
   e.preventDefault()
@@ -31,73 +32,94 @@ function handleDragLeave() {
 async function handleDrop(e) {
   e.preventDefault()
   isDragging.value = false
-  const files = e.dataTransfer.files
+  const files = Array.from(e.dataTransfer.files)
   if (files.length > 0) {
-    validateAndUpload(files[0])
+    validateAndUpload(files)
   }
 }
 
 function handleFileSelect(e) {
-  const files = e.target.files
+  const files = Array.from(e.target.files)
   if (files.length > 0) {
-    validateAndUpload(files[0])
+    validateAndUpload(files)
   }
+  // 重置 input 以便重复选择同一文件
+  e.target.value = ''
 }
 
-function validateAndUpload(file) {
-  errorMessage.value = ''
+function validateAndUpload(files) {
+  errorMessages.value = []
+  uploadError.value = ''
+  const validFiles = []
+  const rejected = []
 
-  // 文件类型校验
-  const ext = '.' + file.name.split('.').pop().toLowerCase()
-  if (!allowedFileTypes.includes(ext)) {
-    errorMessage.value = `不支持的文件类型，仅支持：${allowedFileTypes.join(', ')}`
+  for (const file of files) {
+    const ext = '.' + file.name.split('.').pop().toLowerCase()
+    if (!allowedFileTypes.includes(ext)) {
+      rejected.push({ fileName: file.name, reason: `不支持的文件类型（${ext}）` })
+      continue
+    }
+    if (file.size > maxFileSize) {
+      const maxSizeMB = (maxFileSize / 1024 / 1024).toFixed(0)
+      rejected.push({ fileName: file.name, reason: `文件大小超过 ${maxSizeMB}MB` })
+      continue
+    }
+    validFiles.push(file)
+  }
+
+  if (validFiles.length === 0) {
+    errorMessages.value = rejected.map((r) => `${r.fileName}: ${r.reason}`)
     return
   }
 
-  // 文件大小校验
-  if (file.size > maxFileSize) {
-    const maxSizeMB = (maxFileSize / 1024 / 1024).toFixed(0)
-    errorMessage.value = `文件大小不能超过 ${maxSizeMB}MB`
-    return
-  }
-
-  uploadFileFn(file)
+  uploadFiles(validFiles, rejected)
 }
 
-async function uploadFileFn(file) {
-  fileStore.setUploading(true)
-  fileStore.setUploadProgress(0)
-  fileStore.setProcessStatus('uploading')
-  fileStore.setCurrentFile(file)
-  errorMessage.value = ''
+async function uploadFiles(validFiles, rejected) {
+  fileStore.isUploading = true
+  fileStore.uploadProgress = 0
+  fileStore.processStatus = 'uploading'
+  errorMessages.value = []
+  uploadError.value = ''
+
+  const results = []
 
   try {
-    const result = await uploadFile(file)
-
-    // 模拟进度到 100%
-    fileStore.setUploadProgress(100)
-
-    // 获取 fileId（后端可能直接返回字符串，或返回包含 fileId 的对象）
-    console.log('[FileUpload] Upload response type:', typeof result, ', value:', result)
-    const fileId = typeof result === 'string'
-      ? result
-      : result?.fileId || result?.data?.fileId
-    if (!fileId) {
-      throw new Error('上传成功但未获取到文件ID')
+    // 1. 获取 STS 临时凭证
+    fileStore.currentFile = { name: '正在获取上传凭证...' }
+    const stsConfig = await getStsToken()
+    if (stsConfig.error) {
+      throw new Error(`获取上传凭证失败: ${stsConfig.error}`)
     }
 
-    // 通知父组件上传完成，开始提取
-    emit('upload-complete', fileId, file.name)
+    // 2. 逐个上传到 OSS
+    for (let i = 0; i < validFiles.length; i++) {
+      const file = validFiles[i]
+      fileStore.currentFile = file
+      fileStore.uploadProgress = Math.round(((i) / validFiles.length) * 100)
+
+      const ossUrl = await uploadFileToOss(stsConfig, file)
+      results.push({ fileName: file.name, ossUrl })
+      fileStore.uploadProgress = Math.round(((i + 1) / validFiles.length) * 100)
+    }
   } catch (err) {
-    errorMessage.value = err.message || '上传失败，请重试'
-    fileStore.setUploading(false)
-    fileStore.setProcessStatus('')
+    uploadError.value = err.message || '上传失败'
+    fileStore.isUploading = false
+    fileStore.processStatus = ''
+    return
   }
+
+  fileStore.isUploading = false
+  fileStore.processStatus = ''
+
+  // 3. 通知父组件上传完成（同时传递 rejected 列表）
+  emit('upload-complete', { uploaded: results, rejected })
 }
 
 function handleCancel() {
   fileStore.reset()
-  errorMessage.value = ''
+  errorMessages.value = []
+  uploadError.value = ''
   emit('cancel')
 }
 </script>
@@ -112,7 +134,7 @@ function handleCancel() {
       @drop="handleDrop"
     >
       <!-- 上传前状态 -->
-      <div v-if="!fileStore.isUploading && !errorMessage" class="upload-prompt">
+      <div v-if="!fileStore.isUploading && errorMessages.length === 0 && !uploadError" class="upload-prompt">
         <div class="upload-icon">
           <svg viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="currentColor" stroke-width="1.5">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
@@ -120,7 +142,7 @@ function handleCancel() {
             <line x1="12" y1="3" x2="12" y2="15" />
           </svg>
         </div>
-        <p class="upload-text">拖拽文件到此处，或点击选择文件</p>
+        <p class="upload-text">拖拽文件到此处，或点击选择文件（支持批量）</p>
         <p class="upload-hint">支持 {{ allowedFileTypes.join('、') }}，最大 {{ (maxFileSize / 1024 / 1024).toFixed(0) }}MB</p>
         <label class="upload-btn">
           选择文件
@@ -128,6 +150,7 @@ function handleCancel() {
             type="file"
             :accept="allowedFileTypes.join(',')"
             class="file-input"
+            multiple
             @change="handleFileSelect"
           />
         </label>
@@ -147,9 +170,16 @@ function handleCancel() {
         </div>
       </div>
 
-      <!-- 错误信息 -->
-      <div v-if="errorMessage" class="error-message">
-        {{ errorMessage }}
+      <!-- 上传失败 -->
+      <div v-if="uploadError" class="upload-failed">
+        <p class="error-text">{{ uploadError }}</p>
+      </div>
+
+      <!-- 错误信息列表（文件校验失败） -->
+      <div v-if="errorMessages.length > 0 && !fileStore.isUploading" class="error-messages">
+        <div v-for="(msg, i) in errorMessages" :key="i" class="error-item">
+          {{ msg }}
+        </div>
       </div>
     </div>
 
@@ -275,10 +305,25 @@ function handleCancel() {
   transition: width 0.3s;
 }
 
-.error-message {
+.upload-failed {
+  padding: 20px;
+  text-align: center;
+}
+
+.error-text {
   color: #f56c6c;
   font-size: 14px;
+}
+
+.error-messages {
   padding: 20px;
+  width: 100%;
+}
+
+.error-item {
+  color: #f56c6c;
+  font-size: 13px;
+  padding: 4px 0;
   text-align: center;
 }
 
