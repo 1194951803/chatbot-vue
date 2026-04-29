@@ -45,7 +45,8 @@ src/
 │   ├── FileUpload.vue               # 文件上传面板（拖拽/点击上传、STS 直传 OSS、进度条、文件校验）
 │   ├── FileExtractStatus.vue        # 文件提取加载指示器（旋转动画）
 │   ├── FilePreview.vue              # 可编辑的文件数据预览（表单/表格/textarea 渲染）
-│   └── FileListMessage.vue          # 批量文件列表消息（文件上传记录、解析状态展示、预览/重试操作）
+│   ├── FileListMessage.vue          # 批量文件列表消息（文件上传记录、解析状态展示、预览/重试/汇总操作）
+│   └── FileSummaryView.vue          # 文件数据汇总表格（多文件批量预览、行选择、确认提交）
 ├── stores/
 │   ├── chat.js                      # 聊天状态（消息列表、流式响应、中断控制、历史消息加载）
 │   ├── session.js                   # 会话管理（后端 API 对接：列表/创建/删除/历史加载）
@@ -163,20 +164,29 @@ data:{"output":{"text":"增量文本","finish_reason":null},"request_status":fal
    - 使用 `src/utils/normalizeExtractData.js` 将中文 key 标准化为英文 key
    - `Chatbot` 聊天组件始终渲染，`FilePreview` 条件性出现（非互斥架构）
 
-5. **确认提交**：POST `/ai/api/file/confirm` 提交编辑后的数据
+5. **数据汇总**（新增）：
+   - 全部文件解析完成后，或在"解析中"状态下点击已提取的文件时，文件列表底部出现"查看汇总"按钮
+   - 点击后右侧显示 `FileSummaryView` 汇总表格（Element Plus `el-table`），展示姓名、手机号、邮箱等字段
+   - 支持行选择（checkbox），"确认提交"将选中数据提交后端（当前为 mock，待对接 `/ai/api/file/summary`）
+   - 汇总视图与单文件预览互斥：打开汇总时关闭单文件预览，反之亦然
 
-6. **单文件重试**：POST `/ai/api/file/retry` 单独重试失败文件（自动排在批量队列后面）
+6. **确认提交**：POST `/ai/api/file/confirm` 提交编辑后的数据
+
+7. **单文件重试**：POST `/ai/api/file/retry` 单独重试失败文件（自动排在批量队列后面）
 
 ### 文件转换布局
 
 - **上传阶段**：自动最大化，在聊天流中显示 `FileUpload` 面板（拖拽区域 + 进度条 + 取消按钮）
 - **解析阶段**：上传完成后自动在聊天流中插入 `FileListMessage` 消息，实时展示每个文件的解析状态
-- **预览阶段**：点击"查看"后自动最大化，`Chatbot` 聊天组件**始终存在**，`FilePreview` 条件性出现在右侧（`v-if="fileStore.activePreviewFileId && activeFileData"`）
-- **关键架构**：去掉了 `isSplitMode` 变量和 `v-else-if` 互斥渲染链，改为 Chatbot 永不消失、FilePreview 按需出现的非互斥架构
+- **预览阶段**：点击"查看"后自动最大化，`Chatbot` 聊天组件**始终存在**，右侧分屏显示 `FilePreview`（单文件预览编辑）或 `FileSummaryView`（多文件汇总表格），两者互斥
+- **关键架构**：去掉了 `isSplitMode` 变量和 `v-else-if` 互斥渲染链，改为 Chatbot 永不消失、FilePreview/FileSummaryView 条件性出现的非互斥架构
 - **侧边栏行为**：小窗口时 `position: absolute` 覆盖式，大窗口时 `position: relative` 并排式
 - **文件转换模式触发**：点击"文件转换"按钮时 `watch` 自动添加引导消息和 `FileUpload` 面板消息，自动最大化并展开侧边栏
 - **状态响应式更新**：`updateFileInMessage` 通过递增 `message._version` 配合 `<FileListMessage :key="message._version">` 强制子组件重新渲染，确保状态变化立即可见
 - **SSE 解析器**：`src/api/file.js` 中 `createStreamProcessor` 支持自动检测 SSE/NDJSON 格式，`batchParseFiles` 和 `retryParseFile` 共用同一解析器
+- **SSE done 事件处理**：`handleSseEvent` 新增 `event:done` 分支，NDJSON 模式的汇总行也触发 `onDone`，通过 `doneState` 对象防止 `onDone` 重复调用
+- **汇总视图状态**：`fileStore` 新增 `showSummaryView` ref，与 `activePreviewFileId` 互斥；`ChatbotContainer` 中合并 watch 监听两者，任一为真时自动最大化
+- **点击查看汇总按钮逻辑**：文件列表中当 `allExtracted`（全部提取完成）或 `_showSummaryBtn`（点击已提取文件后手动触发）为 true 时显示
 
 ### 模拟模式（调试用）
 
@@ -307,6 +317,7 @@ AI 回复完成后（非流式中）显示反馈工具栏：
 | `/ai/api/file/batch/parse` | 批量文件解析（SSE 流式，event:file/event:done） | 已对接 |
 | `/ai/api/file/retry` | 单文件重试解析（SSE 流式） | 已对接 |
 | `/ai/api/file/confirm` | 确认提交文件数据 | 已对接 |
+| `/ai/api/file/summary` | 获取文件汇总数据 | 待对接 |
 | `/ai/api/file/excel` | 文件转 Excel 下载 | 待对接 |
 | `/ai/api/file/batch/excel` | 批量导出合并 Excel | 待对接 |
 | `/ai/api/chat/session/list` | 会话列表（分页） | 已对接 |
@@ -398,3 +409,6 @@ window.CHATBOT_CONFIG = {
 | SSE 解析器兼容 NDJSON | `createStreamProcessor` 自动检测首个内容行判断 SSE/NDJSON 格式，`event:`/`data:` 状态跨 chunk 持久化 |
 | FileListMessage 强制刷新 | 通过 `_version` 递增配合 `<FileListMessage :key="message._version">` 强制组件重新渲染，解决 `Object.assign` 无法触发 Vue 响应式的问题 |
 | file_list 消息在 assistant 之前渲染 | `FileListMessage` 模板分支必须在 `role === 'assistant'` 之前判断，因为 file_list 消息也有 `role: 'assistant'` |
+| SSE done 事件处理 | `handleSseEvent` 新增 `event:done` 分支，NDJSON 汇总行也触发 `onDone`，通过 `doneState` 对象防止重复调用 |
+| 汇总视图与单文件预览互斥 | `fileStore.showSummaryView` 与 `activePreviewFileId` 互斥，合并 watch 监听两者决定窗口最大化状态 |
+| 点击查看汇总按钮显示逻辑 | `allExtracted` 自动显示，或在"解析中"状态下点击已提取文件时通过 `_showSummaryBtn` 手动触发显示 |
