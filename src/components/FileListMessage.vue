@@ -9,18 +9,30 @@ const props = defineProps({
   },
 })
 
-const emit = defineEmits(['file-click', 're-upload', 'confirm-all'])
+const emit = defineEmits(['file-click', 're-upload', 'confirm-all', 'view-summary'])
 
 const fileStore = useFileStore()
 
 // 这些必须是 computed，否则文件状态变化后计数不会刷新
+// 依赖 message._version 确保 Object.assign 修改文件状态后能触发重新计算
 const totalCount = computed(() => props.message.files?.length || 0)
 const uploadedCount = computed(
-  () => props.message.files?.filter((f) => f.status === 'extracted' || f.status === 'submitted').length || 0,
+  () => {
+    void props.message._version // 依赖 _version 保证响应式更新
+    return props.message.files?.filter((f) => f.status === 'extracted' || f.status === 'submitted').length || 0
+  },
 )
 const allExtracted = computed(
-  () => totalCount.value > 0 && uploadedCount.value === totalCount.value,
+  () => {
+    void props.message._version // 依赖 _version 保证响应式更新
+    return totalCount.value > 0 && uploadedCount.value === totalCount.value
+  },
 )
+
+// 点击文件时手动触发的汇总按钮显示标记
+const showSummaryBtn = computed(() => {
+  return props.message._showSummaryBtn
+})
 
 function getStatusText(file) {
   if (file.extractError) return file.extractError
@@ -109,11 +121,14 @@ function isClickable(file) {
       </div>
     </div>
 
-    <!-- 全部提取完成后显示确认按钮 -->
-    <div v-if="allExtracted" class="file-list-actions">
-      <button class="confirm-all-btn" @click="$emit('confirm-all')">
-        确认提交全部 ({{ totalCount }})
+    <!-- 全部提取完成或点击文件后显示操作按钮 -->
+    <div v-if="allExtracted || showSummaryBtn" class="file-list-actions">
+      <button class="summary-btn" @click="$emit('view-summary')">
+        查看汇总
       </button>
+<!--      <button class="confirm-all-btn" @click="$emit('confirm-all')">
+        确认提交全部 ({{ totalCount }})
+      </button>-->
     </div>
   </div>
 </template>
@@ -293,6 +308,7 @@ function isClickable(file) {
   border-top: 1px solid #e8e8e8;
   display: flex;
   justify-content: center;
+  gap: 12px;
 }
 
 .confirm-all-btn {
@@ -308,5 +324,20 @@ function isClickable(file) {
 
 .confirm-all-btn:hover {
   background: #3a8ee6;
+}
+
+.summary-btn {
+  padding: 6px 20px;
+  background: #67c23a;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.summary-btn:hover {
+  background: #5daf34;
 }
 </style>

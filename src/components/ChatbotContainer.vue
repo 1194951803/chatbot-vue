@@ -11,6 +11,7 @@ import SessionList from './SessionList.vue'
 import Chatbot from './Chatbot.vue'
 import FileUpload from './FileUpload.vue'
 import FilePreview from './FilePreview.vue'
+import FileSummaryView from './FileSummaryView.vue'
 
 const chatStore = useChatStore()
 const sessionStore = useSessionStore()
@@ -43,9 +44,9 @@ onMounted(async () => {
   }
 })
 
-// 监听 previewMode 自动最大化
-watch(() => fileStore.activePreviewFileId, (val) => {
-  isMaximized.value = !!val
+// 监听预览/汇总状态自动最大化
+watch([() => fileStore.activePreviewFileId, () => fileStore.showSummaryView], ([previewId, summary]) => {
+  isMaximized.value = !!previewId || summary
 })
 
 // 监听文件转换模式切换
@@ -198,7 +199,9 @@ function startBatchParse(fileListMsg) {
       }
 
       const fileItem = fileListMsg.files.find((f) => f.index === index)
-      if (!fileItem) return
+      if (!fileItem) {
+        return
+      }
 
       if (success) {
         const normalizedData = normalizeExtractData(structuredData)
@@ -374,7 +377,8 @@ function updateFileInMessage(fileListMsg, fileId, updates) {
     }
   }
 
-  // 递增版本号，配合 FileListMessage 的 :key 强制子组件重新渲染
+  // 替换整个 files 数组以触发 Vue 响应式
+  targetMsg.files = [...targetMsg.files]
   targetMsg._version = (targetMsg._version || 0) + 1
 }
 
@@ -433,6 +437,46 @@ function handleCancelPreview() {
   fileStore.clearActivePreview()
 }
 
+// 关闭汇总视图
+function handleCloseSummary() {
+  fileStore.closeSummaryView()
+}
+
+// 确认提交汇总数据
+async function handleConfirmSummary(selectedRows) {
+  try {
+    // TODO: 调用后端汇总接口
+    // await confirmSummaryData(selectedRows)
+
+    // 临时：标记所有文件为已提交
+    const fileListMsg = chatStore.messages.value.slice().reverse().find((m) => m.type === 'file_list')
+    if (fileListMsg) {
+      fileListMsg.files.forEach((f) => {
+        if (f.status === 'extracted') {
+          updateFileInMessage(fileListMsg, f.fileId, { status: 'submitted' })
+          fileStore.updateFileRecord(f.fileId, { status: 'submitted' })
+        }
+      })
+    }
+    fileStore.closeSummaryView()
+    chatStore.addMessage({
+      role: 'assistant',
+      content: '汇总数据已提交成功。',
+      time: getCurrentTime(),
+      noFeedback: true,
+    })
+    modeStore.switchMode(modeStore.MODES.CUSTOMER_SERVICE)
+    scrollToBottom()
+  } catch (err) {
+    console.error('[ConfirmSummary Error]', err)
+    chatStore.addMessage({
+      role: 'system',
+      content: '提交失败：' + (err.message || ''),
+      time: getCurrentTime(),
+    })
+  }
+}
+
 // 取消上传
 function handleCancelUpload() {
   // 中断正在进行的解析
@@ -453,13 +497,24 @@ function handleFileAction(action) {
   } else if (action.type === 'file-click') {
     const file = action.file
     if (file.status === 'extracted' && file.extractedData) {
-      // 打开预览
+      // 关闭汇总视图，打开单文件预览
+      fileStore.closeSummaryView()
       fileStore.setActivePreviewFileId(file.fileId)
       isMaximized.value = true
+      // 点击文件时检查是否全部解析完成，如果是则显示汇总按钮
+      const msg = action.message
+      if (msg?.files) {
+        const allDone = msg.files.every((f) => f.status === 'extracted' || f.status === 'submitted' || f.status === 'failed')
+        if (allDone) {
+          msg._showSummaryBtn = true
+        }
+      }
     } else if (file.extractError) {
       // 重新解析
       handleFileRetry(file)
     }
+  } else if (action.type === 'view-summary') {
+    fileStore.setShowSummaryView(true)
   } else if (action.type === 'confirm-all') {
     handleConfirmAll(action.message)
   } else if (action.type === 'file_upload' || !action.type) {
@@ -537,7 +592,14 @@ const activeFileName = computed(() => {
           <Chatbot @file-action="handleFileAction" />
         </div>
         <!-- 文件预览编辑组件（有数据时才展示，与聊天区左右分屏） -->
-        <div v-if="fileStore.activePreviewFileId && activeFileData" class="preview-area">
+        <div v-if="fileStore.showSummaryView" class="preview-area">
+          <FileSummaryView
+            :summary-data="[]"
+            @confirm="handleConfirmSummary"
+            @cancel="handleCloseSummary"
+          />
+        </div>
+        <div v-else-if="fileStore.activePreviewFileId && activeFileData" class="preview-area">
           <FilePreview
             :data="activeFileData"
             @confirm="handleConfirmSingle"

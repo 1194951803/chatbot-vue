@@ -54,13 +54,16 @@ function isNdjsonLine(line) {
 /**
  * 处理 SSE 事件（file / done / error）
  */
-function handleSseEvent(eventType, eventData, callbacks) {
+function handleSseEvent(eventType, eventData, callbacks, doneState) {
   if (eventType === 'file') {
     try {
       callbacks.onFile?.(JSON.parse(eventData))
     } catch {
       // 忽略解析失败
     }
+  } else if (eventType === 'done') {
+    // done 事件表示后端已全部处理完成
+    if (!doneState.value) { doneState.value = true; callbacks.onDone?.() }
   } else if (eventType === 'error') {
     try {
       const data = JSON.parse(eventData)
@@ -87,6 +90,7 @@ function createStreamProcessor(callbacks) {
   let ndjsonDetected = false
   let sseEventType = ''
   let sseEventData = ''
+  const doneState = { value: false }
 
   function processChunk(value) {
     buffer += value
@@ -113,7 +117,10 @@ function createStreamProcessor(callbacks) {
         if (line.startsWith('{')) {
           try {
             const data = JSON.parse(line)
-            if (!('successCount' in data) && !('joinedFileIds' in data)) {
+            // 汇总行（含 successCount/joinedFileIds）触发 done
+            if ('successCount' in data || 'joinedFileIds' in data) {
+              if (!doneState.value) { doneState.value = true; callbacks.onDone?.() }
+            } else {
               callbacks.onFile?.(data)
             }
           } catch {
@@ -126,7 +133,7 @@ function createStreamProcessor(callbacks) {
         } else if (line.startsWith('data:')) {
           sseEventData = line.slice(5).trim()
           if (sseEventType && sseEventData) {
-            handleSseEvent(sseEventType, sseEventData, callbacks)
+            handleSseEvent(sseEventType, sseEventData, callbacks, doneState)
             sseEventType = ''
             sseEventData = ''
           }
@@ -141,7 +148,9 @@ function createStreamProcessor(callbacks) {
       if (buffer.trim().startsWith('{')) {
         try {
           const data = JSON.parse(buffer.trim())
-          if (!('successCount' in data) && !('joinedFileIds' in data)) {
+          if ('successCount' in data || 'joinedFileIds' in data) {
+            if (!doneState.value) { doneState.value = true; callbacks.onDone?.() }
+          } else {
             callbacks.onFile?.(data)
           }
         } catch {
@@ -159,7 +168,7 @@ function createStreamProcessor(callbacks) {
         } else if (line.startsWith('data:')) {
           flushEventData = line.slice(5).trim()
           if (flushEventType && flushEventData) {
-            handleSseEvent(flushEventType, flushEventData, callbacks)
+            handleSseEvent(flushEventType, flushEventData, callbacks, doneState)
             flushEventType = ''
             flushEventData = ''
           }
@@ -168,7 +177,7 @@ function createStreamProcessor(callbacks) {
     }
   }
 
-  return { processChunk, flush }
+  return { processChunk, flush, get doneCalled() { return doneState.value } }
 }
 
 /**
@@ -206,10 +215,10 @@ export function batchParseFiles(files, callbacks) {
       }
 
       processor.flush()
-      callbacks.onDone?.()
+      if (!processor.doneCalled) callbacks.onDone?.()
     } catch (error) {
       if (error.name === 'AbortError') {
-        callbacks.onDone?.()
+        if (!processor.doneCalled) callbacks.onDone?.()
       } else {
         callbacks.onError?.(error)
       }
@@ -255,10 +264,10 @@ export function retryParseFile(fileItem, callbacks) {
       }
 
       processor.flush()
-      callbacks.onDone?.()
+      if (!processor.doneCalled) callbacks.onDone?.()
     } catch (error) {
       if (error.name === 'AbortError') {
-        callbacks.onDone?.()
+        if (!processor.doneCalled) callbacks.onDone?.()
       } else {
         callbacks.onError?.(error)
       }
@@ -292,4 +301,11 @@ export function batchDownloadExcel(jsonDataList) {
  */
 export function confirmFileData(data) {
   return request.post('/ai/api/file/confirm', data)
+}
+
+/**
+ * 获取文件汇总数据（待对接）
+ */
+export function getSummaryData(fileIds) {
+  return request.post('/ai/api/file/summary', { fileIds })
 }

@@ -188,6 +188,7 @@ function getStatusType(status) {
         :message="message"
         @file-click="$emit('file-action', { type: 'file-click', file: $event, message })"
         @confirm-all="$emit('file-action', { type: 'confirm-all', message })"
+        @view-summary="$emit('file-action', { type: 'view-summary' })"
       />
     </template>
 

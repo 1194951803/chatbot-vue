@@ -18,6 +18,9 @@ export const useFileStore = defineStore('file', () => {
   // 当前预览面板显示的文件 ID（替代原 previewMode boolean）
   const activePreviewFileId = ref('')
 
+  // 汇总视图显示状态（与单文件预览互斥）
+  const showSummaryView = ref(false)
+
   // 每文件独立管理的 poll 定时器和提取 controller
   const fileStatusPollTimers = new Map()
   const extractControllers = new Map()
@@ -81,6 +84,21 @@ export const useFileStore = defineStore('file', () => {
       extractControllers.delete(activePreviewFileId.value)
     }
     activePreviewFileId.value = ''
+    showSummaryView.value = false
+  }
+
+  /**
+   * 打开/关闭汇总视图（与单文件预览互斥）
+   */
+  function setShowSummaryView(show) {
+    showSummaryView.value = show
+    if (show) {
+      activePreviewFileId.value = ''
+    }
+  }
+
+  function closeSummaryView() {
+    showSummaryView.value = false
   }
 
   /**
@@ -167,6 +185,7 @@ export const useFileStore = defineStore('file', () => {
     // 清空文件记录和预览状态
     fileRecords.value = []
     activePreviewFileId.value = ''
+    showSummaryView.value = false
   }
 
   return {
@@ -179,12 +198,15 @@ export const useFileStore = defineStore('file', () => {
     downloadUrl,
     fileRecords,
     activePreviewFileId,
+    showSummaryView,
     activeFileRecord,
     getFileRecord,
     addFileRecord,
     updateFileRecord,
     setActivePreviewFileId,
     clearActivePreview,
+    setShowSummaryView,
+    closeSummaryView,
     areAllFilesExtracted,
     startFileStatusPoll,
     stopFileStatusPoll,
