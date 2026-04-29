@@ -187,7 +187,16 @@ function startBatchParse(fileListMsg) {
 
   currentParseController = batchParseFiles(parseFiles, {
     onFile: (data) => {
-      const { index, fileName, success, structuredData, errorMessage } = data
+      const { index, success, errorMessage } = data
+      let structuredData = data.structuredData ?? data.structured_data ?? data.data ?? data.result
+      if (typeof structuredData === 'string') {
+        try {
+          structuredData = JSON.parse(structuredData)
+        } catch {
+          // 解析失败保留字符串
+        }
+      }
+
       const fileItem = fileListMsg.files.find((f) => f.index === index)
       if (!fileItem) return
 
@@ -351,13 +360,22 @@ function handleFileRetry(file) {
 
 // 更新 file_list 消息中指定文件的状态
 function updateFileInMessage(fileListMsg, fileId, updates) {
-  // 如果没传 fileListMsg，自动查找最近的一条 file_list 消息
   const targetMsg = fileListMsg || chatStore.messages.value.slice().reverse().find((m) => m.type === 'file_list')
   if (!targetMsg?.files) return
-  const file = targetMsg.files.find((f) => f.fileId === fileId)
-  if (file) {
-    Object.assign(file, updates)
+
+  if (fileId) {
+    const file = targetMsg.files.find((f) => f.fileId === fileId)
+    if (file) {
+      Object.assign(file, updates)
+    }
+  } else {
+    for (const f of targetMsg.files) {
+      Object.assign(f, updates)
+    }
   }
+
+  // 递增版本号，配合 FileListMessage 的 :key 强制子组件重新渲染
+  targetMsg._version = (targetMsg._version || 0) + 1
 }
 
 // 确认提交单个文件

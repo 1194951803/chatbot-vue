@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 
 const props = defineProps({
   data: {
@@ -10,8 +10,37 @@ const props = defineProps({
 
 const emit = defineEmits(['confirm', 'cancel'])
 
-// 深拷贝供编辑
+// 深拷贝供编辑（不直接修改 props.data）
 const editData = ref({})
+
+function cloneData(value) {
+  if (value == null) return {}
+  try {
+    return JSON.parse(JSON.stringify(value))
+  } catch {
+    return { ...value }
+  }
+}
+
+// 初始化 + 跟随 props.data 变化（不同文件切换时重新克隆）
+watch(
+  () => props.data,
+  (val) => {
+    console.log('[FilePreview] props.data changed:', val)
+    editData.value = cloneData(val)
+    console.log('[FilePreview] editData after clone:', editData.value)
+    console.log('[FilePreview] editData keys:', Object.keys(editData.value || {}))
+  },
+  { immediate: true, deep: false },
+)
+
+function handleConfirm() {
+  emit('confirm', editData.value)
+}
+
+function handleCancel() {
+  emit('cancel')
+}
 
 // 判断值是否适合在网格中展示（字符串或数字）
 function isPrimitive(value) {

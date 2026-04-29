@@ -42,9 +42,10 @@ src/
 │   ├── Chatbot.vue                  # 聊天核心（消息列表、输入框、发送/停止、快捷按钮）
 │   ├── MessageBubble.vue            # 消息气泡（Markdown 渲染 + 反馈工具栏 + 文件记录 + 交互式卡片）
 │   ├── SessionList.vue              # 会话列表侧边栏（新建/切换/删除）
-│   ├── FileUpload.vue               # 文件上传面板（拖拽/点击上传、进度条、文件校验）
+│   ├── FileUpload.vue               # 文件上传面板（拖拽/点击上传、STS 直传 OSS、进度条、文件校验）
 │   ├── FileExtractStatus.vue        # 文件提取加载指示器（旋转动画）
-│   └── FilePreview.vue              # 可编辑的文件数据预览（表单/表格/textarea 渲染）
+│   ├── FilePreview.vue              # 可编辑的文件数据预览（表单/表格/textarea 渲染）
+│   └── FileListMessage.vue          # 批量文件列表消息（文件上传记录、解析状态展示、预览/重试操作）
 ├── stores/
 │   ├── chat.js                      # 聊天状态（消息列表、流式响应、中断控制、历史消息加载）
 │   ├── session.js                   # 会话管理（后端 API 对接：列表/创建/删除/历史加载）
@@ -115,7 +116,7 @@ data:{"output":{"text":"增量文本","finish_reason":null},"request_status":fal
 |---|---|
 | `chatStore` | 消息列表、流式响应状态（isStreaming）、流式内容（currentStreamContent）、中断控制（abortController/abortStream）、`appendStreamContent` 追加增量、`loadHistoryMessages` 加载历史消息 |
 | `sessionStore` | 会话列表（后端分页加载）、当前会话 ID、新建/切换/删除、历史消息加载 |
-| `fileStore` | 文件上传进度、状态轮询、文件提取状态（isExtracting/extractedData/previewMode）、上传记录列表（fileRecords） |
+| `fileStore` | 文件上传进度、OSS 直传状态、解析记录列表（fileRecords）、预览文件管理（activePreviewFileId/activeFileRecord）、单文件轮询定时器 |
 | `modeStore` | 当前模式（MODES 常量：customer_service/file_convert/talent_agent/employee_self）、头像切换 |
 
 ## 关键行为
@@ -134,35 +135,48 @@ data:{"output":{"text":"增量文本","finish_reason":null},"request_status":fal
 - 模式路由：人才发展模式（`talent_agent`）走 `/ai/api/person/post/match`，普通模式走 `/ai/api/chatbot/chat`，员工自助模式（`employee_self`）不请求后端，本地意图识别 + mock 卡片响应。
 - 请求参数：`{ prompt: content, sessionId: sessionId, chatSessionId: sessionId }`（注意是 `prompt` 字段，不是 `message`）。
 
-### 文件转换流程
+### 文件转换流程（批量上传 + SSE 流式解析）
 
-完整流程：**上传文件 → 轮询文件状态 → 提取结构化数据 → 左右分栏预览 → 确认提交**
+新流程：**前端 STS 直传 OSS → 批量解析 SSE → 聊天内文件列表 → 预览编辑 → 确认提交**
 
-1. **上传文件**：POST `/ai/api/file/upload`（multipart/form-data），返回文件 ID（纯字符串）
-2. **轮询文件状态**：POST `/ai/api/file/status`（Content-Type: text/plain，body 为 fileId）
-   - 每 2 秒轮询一次，最多 60 次（约 2 分钟）
-   - 状态值：`INIT` → `PARSING` → `SAFE_CHECKING` → `INDEX_BUILDING` → `FILE_IS_READY`
-   - 就绪状态：`FILE_IS_READY`、`PARSE_SUCCESS`、`INDEX_BUILD_SUCCESS`
-   - 失败状态：`PARSE_FAILED`、`SAFE_CHECK_FAILED`、`INDEX_BUILDING_FAILED`、`FILE_EXPIRED`、`INDEX_DELETED`
-3. **提取结构化数据**：POST `/ai/api/stream/analysis/extract`（SSE 流式响应）
-   - 请求体：`{ fileId }`
-   - 返回 Markdown 文本中的 JSON 代码块（```json ... ```）
-   - 使用 `src/utils/jsonParser.js` 提取并解析 JSON
+1. **前端直传 OSS**：
+   - 先调 `GET /ai/api/file/sts` 获取临时凭证（accessKeyId/secret/securityToken/bucket/endpoint/uploadDir）
+   - 使用 `ali-oss` SDK 直传到 OSS，返回带签名的公网 URL（有效期 30 分钟）
+   - 支持批量上传，逐个上传并显示进度条
+   - 文件校验：类型（`.pdf/.doc/.docx/.xls/.xlsx/.txt/.csv/.png/.jpg/.jpeg`）和大小（最大 50MB）
+
+2. **批量解析 SSE**：
+   - 上传完成后，前端 POST `{ index, fileName, ossUrl }[]` 到 `/ai/api/file/batch/parse`
+   - 后端使用 `SseEmitter` 流式返回，`event:file` 逐个推送解析结果（JSON），`event:done` 汇总
+   - SSE 解析器（`src/api/file.js`）兼容标准 SSE 格式和 NDJSON 回退格式
+   - 全局锁保证 Qwen-Doc-Turbo 串行调用，最多 10 个文件，超时 30 分钟
+
+3. **聊天内文件列表**：
+   - 解析过程中在对话流中插入 `type: 'file_list'` 消息，显示 `FileListMessage` 组件
+   - 实时展示每个文件的解析状态（解析中/已提取/解析失败）
+   - 状态更新通过 `_version` 递增配合 `:key` 强制 `FileListMessage` 重新渲染
+   - 解析完成后可点击"查看"打开预览，失败可点击"重试"
+
+4. **预览编辑**：
+   - 点击"查看"自动最大化窗口，右侧显示 `FilePreview` 组件
+   - 支持编辑：基本信息（表单网格）、数组字段（Element Plus 表格）、字符串数组（textarea）
    - 使用 `src/utils/normalizeExtractData.js` 将中文 key 标准化为英文 key
-4. **左右分栏预览**：自动最大化窗口，左侧聊天 + 右侧 `FilePreview` 可编辑预览
-   - FilePreview 支持编辑：基本信息（表单网格）、教育/工作/技能/证书（Element Plus 表格）、自我介绍（textarea）
-   - 工作经历含嵌套项目经历表格
+   - `Chatbot` 聊天组件始终渲染，`FilePreview` 条件性出现（非互斥架构）
+
 5. **确认提交**：POST `/ai/api/file/confirm` 提交编辑后的数据
-6. **文件记录**：每次上传会在聊天消息中添加一条 `type: 'file_upload'` 记录，显示文件名、时间、状态（uploaded/extracted）
+
+6. **单文件重试**：POST `/ai/api/file/retry` 单独重试失败文件（自动排在批量队列后面）
 
 ### 文件转换布局
 
-- **上传阶段**：自动最大化，显示 `FileUpload` 面板（拖拽区域 + 进度条 + 取消按钮）。面板通过 `.content-overlay` 覆盖层展示，宽度限制 `max-width: 600px` 居中显示
-- **等待阶段**：显示 `FileExtractStatus` 加载指示器，动态显示状态提示文本。宽度同样限制 `max-width: 600px`
-- **预览阶段**：`Chatbot` 聊天组件**始终存在**，`FilePreview` 条件性出现在右侧（`v-if="fileStore.previewMode && fileStore.extractedData"`）。两者通过 `.content-body` flex 容器左右分屏
+- **上传阶段**：自动最大化，在聊天流中显示 `FileUpload` 面板（拖拽区域 + 进度条 + 取消按钮）
+- **解析阶段**：上传完成后自动在聊天流中插入 `FileListMessage` 消息，实时展示每个文件的解析状态
+- **预览阶段**：点击"查看"后自动最大化，`Chatbot` 聊天组件**始终存在**，`FilePreview` 条件性出现在右侧（`v-if="fileStore.activePreviewFileId && activeFileData"`）
 - **关键架构**：去掉了 `isSplitMode` 变量和 `v-else-if` 互斥渲染链，改为 Chatbot 永不消失、FilePreview 按需出现的非互斥架构
-- **侧边栏行为**：小窗口时侧边栏保持 `position: absolute` 覆盖式，大窗口时 `position: relative` 并排式。上传/提取覆盖层 z-index 20，固定式侧边栏 z-index 25 不被覆盖
-- **上传完成逻辑**：`handleUploadComplete` 中设置 `showUploadPanel = false` 关闭上传面板，由文件状态轮询接管后续流程
+- **侧边栏行为**：小窗口时 `position: absolute` 覆盖式，大窗口时 `position: relative` 并排式
+- **文件转换模式触发**：点击"文件转换"按钮时 `watch` 自动添加引导消息和 `FileUpload` 面板消息，自动最大化并展开侧边栏
+- **状态响应式更新**：`updateFileInMessage` 通过递增 `message._version` 配合 `<FileListMessage :key="message._version">` 强制子组件重新渲染，确保状态变化立即可见
+- **SSE 解析器**：`src/api/file.js` 中 `createStreamProcessor` 支持自动检测 SSE/NDJSON 格式，`batchParseFiles` 和 `retryParseFile` 共用同一解析器
 
 ### 模拟模式（调试用）
 
@@ -289,16 +303,19 @@ AI 回复完成后（非流式中）显示反馈工具栏：
 |---|---|---|
 | `/ai/api/chatbot/chat` | 聊天消息接口（流式响应） | 已对接 |
 | `/ai/api/person/post/match` | 人才发现智能体接口（流式响应） | 已对接 |
-| `/ai/api/file/upload` | 文件上传（返回 fileId 字符串） | 已对接 |
-| `/ai/api/file/status` | 文件状态查询（POST，body 为 fileId 字符串） | 已对接 |
-| `/ai/api/stream/analysis/extract` | 文件内容提取（SSE 流式） | 已对接 |
+| `/ai/api/file/sts` | 获取 OSS STS 临时上传凭证 | 已对接 |
+| `/ai/api/file/batch/parse` | 批量文件解析（SSE 流式，event:file/event:done） | 已对接 |
+| `/ai/api/file/retry` | 单文件重试解析（SSE 流式） | 已对接 |
 | `/ai/api/file/confirm` | 确认提交文件数据 | 已对接 |
+| `/ai/api/file/excel` | 文件转 Excel 下载 | 待对接 |
+| `/ai/api/file/batch/excel` | 批量导出合并 Excel | 待对接 |
 | `/ai/api/chat/session/list` | 会话列表（分页） | 已对接 |
 | `/ai/api/chat/session` | 新建会话 | 已对接 |
 | `/ai/api/chat/session/{id}` | 删除会话 | 已对接 |
 | `/ai/api/chat/session/{id}/messages` | 历史消息查询 | 已对接 |
-| `/ai/api/file/excel` | 文件转 Excel 下载 | 待对接 |
 | `/ai/api/chatbot/feedback` | 消息反馈上报（赞/踩） | 待对接 |
+
+> 旧版 `/ai/api/file/upload`（服务端上传）、`/ai/api/file/status`（轮询状态）、`/ai/api/stream/analysis/extract`（提取）已废弃，新流程改为前端 STS 直传 OSS + 批量 SSE 解析。
 
 ## 全局配置
 
@@ -376,3 +393,8 @@ window.CHATBOT_CONFIG = {
 | 固定式侧边栏层级高于覆盖层 | `sidebar-fixed` z-index 25 > 覆盖层 z-index 20，防止被上传/提取覆盖层遮挡 |
 | 消息气泡 p 标签紧凑布局 | `<p>` margin 设为 `4px 0`，首尾段落 `margin: 0`，解决单行文本下方多余空白 |
 | 人才发展/员工自助入口提示 | `watch(modeStore.currentMode)` 监听进入/退出时发送问候/退出消息 |
+| 文件上传改用 STS 直传 OSS | 旧版服务端上传 `/ai/api/file/upload` 改为前端 `ali-oss` SDK 直传，降低后端压力，支持断点续传 |
+| 批量解析使用 SSE 流式 | 批量文件通过 `/ai/api/file/batch/parse` SSE 流式返回（`event:file`），避免长时间等待，实时展示每个文件状态 |
+| SSE 解析器兼容 NDJSON | `createStreamProcessor` 自动检测首个内容行判断 SSE/NDJSON 格式，`event:`/`data:` 状态跨 chunk 持久化 |
+| FileListMessage 强制刷新 | 通过 `_version` 递增配合 `<FileListMessage :key="message._version">` 强制组件重新渲染，解决 `Object.assign` 无法触发 Vue 响应式的问题 |
+| file_list 消息在 assistant 之前渲染 | `FileListMessage` 模板分支必须在 `role === 'assistant'` 之前判断，因为 file_list 消息也有 `role: 'assistant'` |

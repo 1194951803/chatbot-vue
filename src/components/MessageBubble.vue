@@ -184,6 +184,7 @@ function getStatusType(status) {
     <!-- 文件列表消息（批量上传）— 必须在 assistant 之前判断，因为 file_list 消息也有 role: 'assistant' -->
     <template v-else-if="message.type === 'file_list'">
       <FileListMessage
+        :key="message._version || 0"
         :message="message"
         @file-click="$emit('file-action', { type: 'file-click', file: $event, message })"
         @confirm-all="$emit('file-action', { type: 'confirm-all', message })"

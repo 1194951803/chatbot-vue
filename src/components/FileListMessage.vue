@@ -1,4 +1,5 @@
 <script setup>
+import { computed } from 'vue'
 import { useFileStore } from '../stores/file'
 
 const props = defineProps({
@@ -12,9 +13,14 @@ const emit = defineEmits(['file-click', 're-upload', 'confirm-all'])
 
 const fileStore = useFileStore()
 
-const uploadedCount = props.message.files?.filter((f) => f.status === 'extracted').length || 0
-const totalCount = props.message.files?.length || 0
-const allExtracted = totalCount > 0 && uploadedCount === totalCount
+// 这些必须是 computed，否则文件状态变化后计数不会刷新
+const totalCount = computed(() => props.message.files?.length || 0)
+const uploadedCount = computed(
+  () => props.message.files?.filter((f) => f.status === 'extracted' || f.status === 'submitted').length || 0,
+)
+const allExtracted = computed(
+  () => totalCount.value > 0 && uploadedCount.value === totalCount.value,
+)
 
 function getStatusText(file) {
   if (file.extractError) return file.extractError
