@@ -9,6 +9,7 @@ export const useChatStore = defineStore('chat', () => {
 
   function addMessage(msg) {
     messages.value.push(msg)
+    return msg
   }
 
   function setStreaming(val) {

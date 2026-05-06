@@ -132,8 +132,9 @@ function handleUploadComplete(result) {
   const { uploaded, rejected } = result
   if (uploaded.length === 0) return
 
-  // 创建 file_list 消息
-  const fileListMsg = {
+  // 创建 file_list 消息（注意：必须使用 addMessage 返回的响应式代理，
+  // 否则后续修改原始对象不会触发 Vue 响应式更新，会导致解析完成后界面停留在"解析中"）
+  const fileListMsg = chatStore.addMessage({
     role: 'assistant',
     type: 'file_list',
     files: uploaded.map((f, idx) => ({
@@ -152,8 +153,8 @@ function handleUploadComplete(result) {
     rejected: rejected || [],
     time: getCurrentTime(),
     noFeedback: true,
-  }
-  chatStore.addMessage(fileListMsg)
+    _version: 0,
+  })
 
   // 同步到 fileStore
   uploaded.forEach((f, idx) => {
@@ -185,6 +186,9 @@ function startBatchParse(fileListMsg) {
     fileStatus: 'parsing',
     statusMessage: '正在解析文件内容...',
   })
+
+  // 首个解析成功的文件自动打开右侧预览（每次批量解析仅触发一次）
+  let firstPreviewShown = false
 
   currentParseController = batchParseFiles(parseFiles, {
     onFile: (data) => {
@@ -220,6 +224,14 @@ function startBatchParse(fileListMsg) {
             extractedData: normalizedData,
             isExtracting: false,
           })
+        }
+
+        // 首个解析成功的文件 → 自动打开右侧预览 + 最大化窗口
+        if (!firstPreviewShown) {
+          firstPreviewShown = true
+          fileStore.closeSummaryView()
+          fileStore.setActivePreviewFileId(fileItem.fileId)
+          isMaximized.value = true
         }
       } else {
         updateFileInMessage(fileListMsg, fileItem.fileId, {
@@ -362,8 +374,11 @@ function handleFileRetry(file) {
 }
 
 // 更新 file_list 消息中指定文件的状态
+// 注意：传入的 fileListMsg 必须是 chatStore.messages 数组中的响应式代理对象，
+// 直接修改原始 plain 对象不会触发 Vue 响应式（refs/reactive 会创建独立的 Proxy）
 function updateFileInMessage(fileListMsg, fileId, updates) {
-  const targetMsg = fileListMsg || chatStore.messages.value.slice().reverse().find((m) => m.type === 'file_list')
+  const targetMsg = fileListMsg
+    || chatStore.messages.slice().reverse().find((m) => m.type === 'file_list')
   if (!targetMsg?.files) return
 
   if (fileId) {
@@ -389,7 +404,7 @@ async function handleConfirmSingle(data) {
     if (record) {
       await confirmFileData({ ...data, fileId: record.fileId })
       // 更新消息中的状态
-      const fileListMsg = chatStore.messages.value.slice().reverse().find((m) => m.type === 'file_list')
+      const fileListMsg = chatStore.messages.slice().reverse().find((m) => m.type === 'file_list')
       if (fileListMsg) {
         updateFileInMessage(fileListMsg, record.fileId, { status: 'submitted' })
       }
@@ -449,7 +464,7 @@ async function handleConfirmSummary(selectedRows) {
     // await confirmSummaryData(selectedRows)
 
     // 临时：标记所有文件为已提交
-    const fileListMsg = chatStore.messages.value.slice().reverse().find((m) => m.type === 'file_list')
+    const fileListMsg = chatStore.messages.slice().reverse().find((m) => m.type === 'file_list')
     if (fileListMsg) {
       fileListMsg.files.forEach((f) => {
         if (f.status === 'extracted') {
@@ -521,9 +536,9 @@ function handleFileAction(action) {
     // 兼容旧的 file_upload 消息点击（重新上传）
     const msg = action.message || action
     if (msg?.type === 'file_upload' && msg.status === 'uploaded') {
-      const idx = chatStore.messages.value.indexOf(msg)
+      const idx = chatStore.messages.indexOf(msg)
       if (idx >= 0) {
-        chatStore.messages.value.splice(idx + 1)
+        chatStore.messages.splice(idx + 1)
       }
       modeStore.switchMode(modeStore.MODES.FILE_CONVERT)
     }
@@ -594,7 +609,7 @@ const activeFileName = computed(() => {
         <!-- 文件预览编辑组件（有数据时才展示，与聊天区左右分屏） -->
         <div v-if="fileStore.showSummaryView" class="preview-area">
           <FileSummaryView
-            :summary-data="[]"
+            :file-records="fileStore.fileRecords"
             @confirm="handleConfirmSummary"
             @cancel="handleCloseSummary"
           />
@@ -602,6 +617,7 @@ const activeFileName = computed(() => {
         <div v-else-if="fileStore.activePreviewFileId && activeFileData" class="preview-area">
           <FilePreview
             :data="activeFileData"
+            :file-name="activeFileName"
             @confirm="handleConfirmSingle"
             @cancel="handleCancelPreview"
           />
