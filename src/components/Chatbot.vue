@@ -3,7 +3,7 @@ import { ref, nextTick, computed, onMounted, watch } from 'vue'
 import { useChatStore } from '../stores/chat'
 import { useModeStore } from '../stores/mode'
 import { useSessionStore } from '../stores/session'
-import { recognizeIntent } from '../api/employee'
+import { recognizeIntent, clearIntentConversation } from '../api/employee'
 import { createStreamRequest } from '../utils/stream'
 import { renderMarkdown } from '../utils/markdown'
 import MessageBubble from './MessageBubble.vue'
@@ -49,6 +49,11 @@ watch(() => modeStore.currentMode, (mode, prevMode) => {
     })
     scrollToBottom()
   } else if (prevMode === modeStore.MODES.EMPLOYEE_SELF) {
+    // 清除后端多轮对话上下文
+    if (chatStore.employeeConversationId) {
+      clearIntentConversation(chatStore.employeeConversationId)
+      chatStore.clearEmployeeConversationId()
+    }
     chatStore.addMessage({
       role: 'system',
       content: '已退出员工自助模式，恢复为客服模式。',
@@ -98,17 +103,22 @@ async function handleSend() {
   chatStore.addMessage(userMsg)
   scrollToBottom()
 
-  // 员工自助模式：调用后端意图识别接口
+  // 员工自助模式：调用后端意图识别接口（支持多轮对话）
   if (modeStore.currentMode === modeStore.MODES.EMPLOYEE_SELF) {
     const time = getCurrentTime()
     try {
-      const res = await recognizeIntent(content)
+      const res = await recognizeIntent(content, chatStore.employeeConversationId)
       const result = extractData(res)
+      // 保存后端返回的 conversationId，后续轮次回传
+      if (result?.conversationId) {
+        chatStore.setEmployeeConversationId(result.conversationId)
+      }
       if (result?.matched) {
         const params = result.parameters ? JSON.parse(result.parameters) : {}
         const card = buildCardFromIntent(result.intent, params, time)
         chatStore.addMessage(card)
       } else {
+        // 未匹配到意图，后端正在追问，展示追问消息
         chatStore.addMessage({
           role: 'assistant',
           content: result?.message || '未识别到您的意图，请换一种方式描述。',

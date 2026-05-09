@@ -202,20 +202,24 @@ data:{"output":{"text":"增量文本","finish_reason":null},"request_status":fal
 用户点击"员工自助"按钮 → 按钮变蓝 → mode → employee_self
     ↓ AI 发送问候文本（提示可用功能）
     ↓ 用户输入自然语言，如"我想明天上午请假"
-AI 调用后端 /ai/api/intent/employee（意图识别）
+AI 调用后端 /ai/api/intent/employee?prompt=xxx（首次不传 conversationId）
+    ↓ 后端返回 conversationId，前端保存到 chatStore
     ↓ matched=true → 解析 parameters JSON → 渲染对应卡片
-    ↓ matched=false → 展示提示文本
+    ↓ matched=false → 展示后端追问消息，保存 conversationId
+    ↓ 用户继续回复 → 回传 conversationId → 后端累积上下文 → 再次识别
+    ↓ 匹配成功后渲染卡片
     ↓ 用户点击"确认提交"
 AI 发送提交成功文本消息
     ↓ 用户再次点击"员工自助"按钮 → 按钮恢复白色
-mode → customer_service + 系统提示退出消息
+调用 /ai/api/intent/employee/clear → 清除后端缓存 → mode → customer_service + 系统提示退出消息
 ```
 
 **关键实现**：
 
 - **快捷按钮 Toggle**（`Chatbot.vue` `handleQuickAction`）：当前已是该模式时退出到 `CUSTOMER_SERVICE`，否则进入该模式
-- **模式监听**（`watch` on `modeStore.currentMode`）：进入 `EMPLOYEE_SELF` 时发送问候消息；退出时发送系统提示
-- **`handleSend` 调用**：`employee_self` 模式下调用 `/ai/api/intent/employee?prompt=用户输入`，根据返回的 `intent` 和 `parameters` 构建卡片消息；接口失败时兜底本地正则识别
+- **模式监听**（`watch` on `modeStore.currentMode`）：进入 `EMPLOYEE_SELF` 时发送问候消息；退出时发送系统提示并调用 `/ai/api/intent/employee/clear` 清除后端多轮对话上下文
+- **多轮对话**：`chatStore` 维护 `employeeConversationId`，首次调用不传，后端返回后保存，后续请求回传 `conversationId` 参数实现上下文连贯；后端缓存 TTL 30 分钟
+- **`handleSend` 调用**：`employee_self` 模式下调用 `/ai/api/intent/employee?prompt=用户输入&conversationId=xxx`，`matched=true` 时根据返回的 `intent` 和 `parameters` 构建卡片消息；`matched=false` 时展示后端返回的追问消息（`message` 字段）；接口失败时兜底本地正则识别
 - **意图识别**：后端通过大模型 Function Calling 识别意图，返回格式见 `DEVELOP.md` 第五节
 - **卡片映射**：`buildCardFromIntent()` 将后端意图映射到前端卡片类型：`leave_request`→`leave_form`、`salary_query`→`salary`、`personal_info`→`profile`、`application_records`→`records`、`annual_assessment`/`performance_goals`→文本提示
 - **本地兜底**：`detectIntent()` 使用正则匹配关键词（接口调用失败时启用）
@@ -390,7 +394,7 @@ window.CHATBOT_CONFIG = {
 | JSON 提取三级回退策略 | 优先 ```json 代码块 → 普通 ``` 代码块 → 括号匹配 { } |
 | 数据标准化层 | `normalizeExtractData.js` 将中文 key 映射为英文 key，供 FilePreview 统一处理 |
 | `interactive_card` 模板必须在 `role === 'assistant'` 之前判断 | 卡片消息同时有 `role: 'assistant'`，放在后面会被 assistant 分支拦截 |
-| 员工自助意图识别 | 调用 `/ai/api/intent/employee` 后端接口，失败时兜底本地正则识别，不再纯 mock |
+| 员工自助多轮对话 | 通过 `conversationId` 参数维护上下文，首次不传后端返回 ID，后续回传实现追问补全；退出时调用 `/clear` 清除缓存 |
 | 系统消息标记 noFeedback | 非智能体生成的消息（问候/退出/卡片操作）标记 noFeedback，隐藏反馈工具栏 |
 | Chatbot 组件始终渲染 | 去掉 `v-else-if` 互斥链，Chatbot 永不消失，FilePreview 条件性出现在右侧 |
 | 上传覆盖层宽度约束 | `.content-overlay` 内通过 `.overlay-content` 限制 `max-width: 600px` 居中显示，防止填满大窗口 |
