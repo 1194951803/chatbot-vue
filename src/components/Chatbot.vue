@@ -3,6 +3,7 @@ import { ref, nextTick, computed, onMounted, watch } from 'vue'
 import { useChatStore } from '../stores/chat'
 import { useModeStore } from '../stores/mode'
 import { useSessionStore } from '../stores/session'
+import { recognizeIntent } from '../api/employee'
 import { createStreamRequest } from '../utils/stream'
 import { renderMarkdown } from '../utils/markdown'
 import MessageBubble from './MessageBubble.vue'
@@ -97,14 +98,30 @@ async function handleSend() {
   chatStore.addMessage(userMsg)
   scrollToBottom()
 
-  // 员工自助模式：拦截请求，使用意图识别 + mock 响应
+  // 员工自助模式：调用后端意图识别接口
   if (modeStore.currentMode === modeStore.MODES.EMPLOYEE_SELF) {
-    console.log('[Chatbot] 员工自助模式拦截，intent检测:', content)
-    const intent = detectIntent(content)
-    console.log('[Chatbot] detected intent:', intent)
-    const card = generateMockCard(intent)
-    console.log('[Chatbot] generated card:', card)
-    chatStore.addMessage(card)
+    const time = getCurrentTime()
+    try {
+      const res = await recognizeIntent(content)
+      const result = extractData(res)
+      if (result?.matched) {
+        const params = result.parameters ? JSON.parse(result.parameters) : {}
+        const card = buildCardFromIntent(result.intent, params, time)
+        chatStore.addMessage(card)
+      } else {
+        chatStore.addMessage({
+          role: 'assistant',
+          content: result?.message || '未识别到您的意图，请换一种方式描述。',
+          time,
+          noFeedback: true,
+        })
+      }
+    } catch (err) {
+      console.warn('[Chatbot] 意图识别接口调用失败，使用本地兜底:', err)
+      const intent = detectIntent(content)
+      const card = generateMockCard(intent)
+      chatStore.addMessage(card)
+    }
     scrollToBottom()
     return
   }
@@ -244,6 +261,114 @@ function handleRegenerate(message) {
 defineExpose({ messageContainer })
 
 // ===== 员工自助：意图识别 =====
+
+// 从 axios 响应中提取 data 字段（兼容 { code: 200, data: {...} } 包装格式）
+function extractData(res) {
+  return res?.data?.code === 200 ? res.data.data : res?.data
+}
+
+// 格式化请假时间：若只有日期（YYYY-MM-DD），补充默认时分；若已有时分则原样返回
+function formatLeaveTime(dateStr, defaultTime) {
+  if (!dateStr) return ''
+  if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+    return `${dateStr} ${defaultTime}`
+  }
+  return dateStr
+}
+
+// 根据后端返回的意图和参数构建卡片消息
+function buildCardFromIntent(intent, params, time) {
+  switch (intent) {
+    case 'leave_request': {
+      // 后端返回的日期可能只有 YYYY-MM-DD，补充默认时分
+      const startDate = formatLeaveTime(params.startDate, '09:00')
+      const endDate = formatLeaveTime(params.endDate || params.startDate, '18:00')
+      return {
+        role: 'assistant',
+        type: 'interactive_card',
+        cardType: 'leave_form',
+        cardData: {
+          type: params.leaveType || '年假',
+          startDate,
+          endDate,
+          reason: params.reason || '',
+          status: '待提交',
+        },
+        time,
+        noFeedback: true,
+      }
+    }
+    case 'salary_query': {
+      const month = params.queryMonth || '本月'
+      return {
+        role: 'assistant',
+        type: 'interactive_card',
+        cardType: 'salary',
+        cardData: {
+          month,
+          baseSalary: '15,000.00',
+          performance: '3,500.00',
+          allowance: '800.00',
+          grossSalary: '20,500.00',
+          socialSecurity: '2,100.00',
+          housingFund: '1,200.00',
+          tax: '680.00',
+          netSalary: '16,520.00',
+        },
+        time,
+        noFeedback: true,
+      }
+    }
+    case 'personal_info':
+      return {
+        role: 'assistant',
+        type: 'interactive_card',
+        cardType: 'profile',
+        cardData: {
+          name: '张三',
+          dept: '技术研发部',
+          position: '高级工程师',
+          employeeNo: 'EMP2024001',
+          joinDate: '2020-03-15',
+          email: 'zhangsan@company.com',
+          phone: '138****5678',
+        },
+        time,
+        noFeedback: true,
+      }
+    case 'application_records':
+      return {
+        role: 'assistant',
+        type: 'interactive_card',
+        cardType: 'records',
+        cardData: [
+          { type: '请假', title: '年假申请', date: '2026-04-10', status: '已通过' },
+          { type: '请假', title: '事假申请', date: '2026-04-01', status: '已驳回' },
+          { type: '报销', title: '差旅费报销', date: '2026-03-28', status: '审批中' },
+          { type: '请假', title: '病假申请', date: '2026-03-15', status: '已通过' },
+        ],
+        time,
+        noFeedback: true,
+      }
+    case 'annual_assessment':
+    case 'performance_goals':
+      return {
+        role: 'assistant',
+        content: '该功能正在开发中，敬请期待。',
+        time,
+        noFeedback: true,
+      }
+    default:
+      return {
+        role: 'assistant',
+        content: '未识别到您的意图。您可以尝试输入如"我想请假"、"查看薪酬"、"个人信息"等。',
+        time,
+        noFeedback: true,
+      }
+  }
+}
+
+// 本地兜底意图识别（接口调用失败时使用）
 function detectIntent(content) {
   if (/请假|休假|调休/.test(content)) return 'leave'
   if (/薪酬|工资|工资条/.test(content)) return 'salary'

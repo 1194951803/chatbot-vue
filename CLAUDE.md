@@ -133,7 +133,7 @@ data:{"output":{"text":"增量文本","finish_reason":null},"request_status":fal
 ### 消息收发
 
 - 发送：Enter 键或点击发送按钮，Shift+Enter 换行。
-- 模式路由：人才发展模式（`talent_agent`）走 `/ai/api/person/post/match`，普通模式走 `/ai/api/chatbot/chat`，员工自助模式（`employee_self`）不请求后端，本地意图识别 + mock 卡片响应。
+- 模式路由：人才发展模式（`talent_agent`）走 `/ai/api/person/post/match`，普通模式走 `/ai/api/chatbot/chat`，员工自助模式（`employee_self`）调用 `/ai/api/intent/employee` 进行意图识别 + 后端返回参数生成卡片，接口失败时兜底本地识别。
 - 请求参数：`{ prompt: content, sessionId: sessionId, chatSessionId: sessionId }`（注意是 `prompt` 字段，不是 `message`）。
 
 ### 文件转换流程（批量上传 + SSE 流式解析）
@@ -202,7 +202,9 @@ data:{"output":{"text":"增量文本","finish_reason":null},"request_status":fal
 用户点击"员工自助"按钮 → 按钮变蓝 → mode → employee_self
     ↓ AI 发送问候文本（提示可用功能）
     ↓ 用户输入自然语言，如"我想明天上午请假"
-AI 识别意图 → 发送对应卡片（mock 数据 + 确认提交按钮）
+AI 调用后端 /ai/api/intent/employee（意图识别）
+    ↓ matched=true → 解析 parameters JSON → 渲染对应卡片
+    ↓ matched=false → 展示提示文本
     ↓ 用户点击"确认提交"
 AI 发送提交成功文本消息
     ↓ 用户再次点击"员工自助"按钮 → 按钮恢复白色
@@ -213,18 +215,10 @@ mode → customer_service + 系统提示退出消息
 
 - **快捷按钮 Toggle**（`Chatbot.vue` `handleQuickAction`）：当前已是该模式时退出到 `CUSTOMER_SERVICE`，否则进入该模式
 - **模式监听**（`watch` on `modeStore.currentMode`）：进入 `EMPLOYEE_SELF` 时发送问候消息；退出时发送系统提示
-- **`handleSend` 拦截**：`employee_self` 模式下不请求后端，通过 `detectIntent()` 正则识别意图 + `generateMockCard()` 生成卡片消息
-- **意图识别**：`detectIntent()` 使用正则匹配关键词：
-
-| 关键词 | 意图 | 响应 |
-|---|---|---|
-| 请假/休假/调休 | `leave` | `leave_form` 卡片 |
-| 薪酬/工资/工资条 | `salary` | `salary` 卡片 |
-| 个人信息/信息/简历/个人资料 | `profile` | `profile` 卡片 |
-| 记录/申请记录/历史 | `records` | `records` 卡片 |
-| 年度考核/年度评价 | `annual_review` | 文本"功能开发中" |
-| 绩效目标/OKR | `performance` | 文本"功能开发中" |
-| 其他 | 无匹配 | 文本"未识别意图"提示 |
+- **`handleSend` 调用**：`employee_self` 模式下调用 `/ai/api/intent/employee?prompt=用户输入`，根据返回的 `intent` 和 `parameters` 构建卡片消息；接口失败时兜底本地正则识别
+- **意图识别**：后端通过大模型 Function Calling 识别意图，返回格式见 `DEVELOP.md` 第五节
+- **卡片映射**：`buildCardFromIntent()` 将后端意图映射到前端卡片类型：`leave_request`→`leave_form`、`salary_query`→`salary`、`personal_info`→`profile`、`application_records`→`records`、`annual_assessment`/`performance_goals`→文本提示
+- **本地兜底**：`detectIntent()` 使用正则匹配关键词（接口调用失败时启用）
 
 - **交互式卡片**（`MessageBubble.vue`）：新增 `type === 'interactive_card'` 渲染分支，支持 `leave_form`/`profile`/`salary`/`records` 四种卡片。**注意**：该分支必须在 `role === 'assistant'` 之前判断，因为卡片消息也有 `role: 'assistant'`，否则会被 assistant 分支拦截
 - **卡片操作处理**（`Chatbot.vue` `handleCardAction`）：通过 `@card-action` 事件接收操作，`confirm_leave` 发送成功消息，`cancel` 发送取消消息
@@ -265,8 +259,8 @@ mode → customer_service + 系统提示退出消息
 
 | 维度 | 员工自助 | 人才发展 |
 |---|---|---|
-| 后端请求 | 不请求后端，本地 mock | 走后端 `/ai/api/person/post/match` |
-| 响应方式 | 本地意图识别 + mock 卡片 | SSE 流式 Markdown |
+| 后端请求 | 走后端 `/ai/api/intent/employee`（失败时本地兜底） | 走后端 `/ai/api/person/post/match` |
+| 响应方式 | 意图识别 + 参数驱动卡片渲染 | SSE 流式 Markdown |
 | 反馈工具栏 | 隐藏（noFeedback） | 正常显示 |
 
 ### 消息气泡
@@ -396,7 +390,7 @@ window.CHATBOT_CONFIG = {
 | JSON 提取三级回退策略 | 优先 ```json 代码块 → 普通 ``` 代码块 → 括号匹配 { } |
 | 数据标准化层 | `normalizeExtractData.js` 将中文 key 映射为英文 key，供 FilePreview 统一处理 |
 | `interactive_card` 模板必须在 `role === 'assistant'` 之前判断 | 卡片消息同时有 `role: 'assistant'`，放在后面会被 assistant 分支拦截 |
-| 员工自助使用纯对话流 + 意图识别 | 不使用独立组件（已删除 EmployeeService.vue），在 Chatbot.vue 中拦截发送 |
+| 员工自助意图识别 | 调用 `/ai/api/intent/employee` 后端接口，失败时兜底本地正则识别，不再纯 mock |
 | 系统消息标记 noFeedback | 非智能体生成的消息（问候/退出/卡片操作）标记 noFeedback，隐藏反馈工具栏 |
 | Chatbot 组件始终渲染 | 去掉 `v-else-if` 互斥链，Chatbot 永不消失，FilePreview 条件性出现在右侧 |
 | 上传覆盖层宽度约束 | `.content-overlay` 内通过 `.overlay-content` 限制 `max-width: 600px` 居中显示，防止填满大窗口 |
