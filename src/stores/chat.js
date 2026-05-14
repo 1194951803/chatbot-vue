@@ -6,7 +6,7 @@ export const useChatStore = defineStore('chat', () => {
   const isStreaming = ref(false)
   const currentStreamContent = ref('')
   const abortController = ref(null)
-  const employeeConversationId = ref(null)
+  const employeeSessionId = ref(null)
 
   function addMessage(msg) {
     messages.value.push(msg)
@@ -41,12 +41,12 @@ export const useChatStore = defineStore('chat', () => {
     messages.value = []
   }
 
-  function setEmployeeConversationId(id) {
-    employeeConversationId.value = id
+  function setEmployeeSessionId(id) {
+    employeeSessionId.value = id
   }
 
-  function clearEmployeeConversationId() {
-    employeeConversationId.value = null
+  function clearEmployeeSessionId() {
+    employeeSessionId.value = null
   }
 
   /**
@@ -83,7 +83,7 @@ export const useChatStore = defineStore('chat', () => {
     isStreaming,
     currentStreamContent,
     abortController,
-    employeeConversationId,
+    employeeSessionId,
     addMessage,
     setStreaming,
     setStreamContent,
@@ -92,7 +92,7 @@ export const useChatStore = defineStore('chat', () => {
     abortStream,
     clearMessages,
     loadHistoryMessages,
-    setEmployeeConversationId,
-    clearEmployeeConversationId,
+    setEmployeeSessionId,
+    clearEmployeeSessionId,
   }
 })

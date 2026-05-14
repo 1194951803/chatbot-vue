@@ -1,17 +1,2 @@
-import request from './request'
-
-/**
- * 员工自助意图识别（支持多轮对话）
- */
-export function recognizeIntent(prompt, conversationId) {
-  const params = { prompt }
-  if (conversationId) params.conversationId = conversationId
-  return request.get('/ai/api/intent/employee', { params })
-}
-
-/**
- * 清除员工自助多轮对话上下文
- */
-export function clearIntentConversation(conversationId) {
-  return request.get('/ai/api/intent/employee/clear', { params: { conversationId } })
-}
+// 员工自助意图识别使用 createStreamRequest（fetch）直接处理 SSE 流式响应
+// 无需单独的 API 封装函数，请求 URL 为 /ai/api/intent/employee

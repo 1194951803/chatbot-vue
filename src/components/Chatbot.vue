@@ -3,7 +3,6 @@ import { ref, nextTick, computed, onMounted, watch } from 'vue'
 import { useChatStore } from '../stores/chat'
 import { useModeStore } from '../stores/mode'
 import { useSessionStore } from '../stores/session'
-import { recognizeIntent, clearIntentConversation } from '../api/employee'
 import { createStreamRequest } from '../utils/stream'
 import { renderMarkdown } from '../utils/markdown'
 import MessageBubble from './MessageBubble.vue'
@@ -49,11 +48,8 @@ watch(() => modeStore.currentMode, (mode, prevMode) => {
     })
     scrollToBottom()
   } else if (prevMode === modeStore.MODES.EMPLOYEE_SELF) {
-    // 清除后端多轮对话上下文
-    if (chatStore.employeeConversationId) {
-      clearIntentConversation(chatStore.employeeConversationId)
-      chatStore.clearEmployeeConversationId()
-    }
+    // 清除本地 sessionId，下次进入自动创建新会话
+    chatStore.clearEmployeeSessionId()
     chatStore.addMessage({
       role: 'system',
       content: '已退出员工自助模式，恢复为客服模式。',
@@ -103,36 +99,119 @@ async function handleSend() {
   chatStore.addMessage(userMsg)
   scrollToBottom()
 
-  // 员工自助模式：调用后端意图识别接口（支持多轮对话）
+  // 员工自助模式：SSE 流式意图识别接口（POST JSON Body）
   if (modeStore.currentMode === modeStore.MODES.EMPLOYEE_SELF) {
     const time = getCurrentTime()
-    try {
-      const res = await recognizeIntent(content, chatStore.employeeConversationId)
-      const result = extractData(res)
-      // 保存后端返回的 conversationId，后续轮次回传
-      if (result?.conversationId) {
-        chatStore.setEmployeeConversationId(result.conversationId)
-      }
-      if (result?.matched) {
-        const params = result.parameters ? JSON.parse(result.parameters) : {}
-        const card = buildCardFromIntent(result.intent, params, time)
-        chatStore.addMessage(card)
-      } else {
-        // 未匹配到意图，后端正在追问，展示追问消息
-        chatStore.addMessage({
-          role: 'assistant',
-          content: result?.message || '未识别到您的意图，请换一种方式描述。',
-          time,
-          noFeedback: true,
-        })
-      }
-    } catch (err) {
-      console.warn('[Chatbot] 意图识别接口调用失败，使用本地兜底:', err)
-      const intent = detectIntent(content)
-      const card = generateMockCard(intent)
-      chatStore.addMessage(card)
-    }
-    scrollToBottom()
+    const apiUrl = window.CHATBOT_CONFIG?.baseUrl ?? ''
+    let lastSessionId = null
+    let accumulatedToolCalls = {}  // 按 index 累积 tool_calls 的 name 和 arguments
+
+    console.log('[Employee Intent] 发起请求, URL:', `${apiUrl}/ai/api/intent/employee`)
+    console.log('[Employee Intent] Request body:', JSON.stringify({
+      prompt: content,
+      sessionId: chatStore.employeeSessionId || undefined,
+    }))
+
+    chatStore.setStreaming(true)
+    chatStore.setStreamContent('')
+
+    const controller = createStreamRequest(
+      `${apiUrl}/ai/api/intent/employee`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: content,
+          sessionId: chatStore.employeeSessionId || undefined,
+        }),
+      },
+      {
+        onChunk(data) {
+          console.log('[Employee Intent] onChunk 收到数据:', JSON.stringify(data))
+          // 提取 sessionId（每帧都可能包含，取最新的）
+          if (data?.output?.session_id) {
+            lastSessionId = data.output.session_id
+            console.log('[Employee Intent] 提取 sessionId:', lastSessionId)
+          }
+          // 累积 tool_calls（增量流式返回，需要拼接 arguments）
+          if (data.output?.choices?.[0]?.message?.tool_calls) {
+            const tcs = data.output.choices[0].message.tool_calls
+            for (const tc of tcs) {
+              const idx = tc.index ?? 0
+              if (!accumulatedToolCalls[idx]) {
+                accumulatedToolCalls[idx] = { id: tc.id, function: { name: '', arguments: '' } }
+              }
+              // name 只在首帧出现，累积一次即可
+              if (tc.function?.name) {
+                accumulatedToolCalls[idx].function.name = tc.function.name
+              }
+              // arguments 逐块追加
+              if (tc.function?.arguments) {
+                accumulatedToolCalls[idx].function.arguments += tc.function.arguments
+              }
+            }
+            console.log('[Employee Intent] 累积 tool_calls:', JSON.stringify(accumulatedToolCalls))
+          }
+          // 提取增量文本 — 兼容两种格式：
+          // 1. DashScope 原生格式：data.output.choices[0].message.content
+          // 2. 通用 SSE 格式：data.output.text
+          let text = ''
+          if (typeof data === 'string') {
+            text = data
+          } else if (data.output?.text !== undefined) {
+            text = data.output.text
+          } else if (data.output?.choices?.[0]?.message?.content !== undefined) {
+            text = data.output.choices[0].message.content
+          }
+          if (text) {
+            console.log('[Employee Intent] 提取到文本:', text)
+            chatStore.appendStreamContent(text)
+            scrollToBottom()
+          }
+        },
+        onDone() {
+          console.log('[Employee Intent] onDone 流结束, sessionId:', lastSessionId)
+          console.log('[Employee Intent] 累积完整文本:', chatStore.currentStreamContent)
+          console.log('[Employee Intent] 累积 tool_calls:', JSON.stringify(accumulatedToolCalls))
+          // 保存 sessionId，后续轮次回传
+          if (lastSessionId) {
+            chatStore.setEmployeeSessionId(lastSessionId)
+          }
+          chatStore.setStreaming(false)
+          // 流结束后判断是否匹配到意图
+          const fullText = chatStore.currentStreamContent
+          const { intent, params } = extractIntentFromToolCalls(accumulatedToolCalls)
+          console.log('[Employee Intent] 意图解析结果:', { intent, params })
+          if (intent) {
+            const card = buildCardFromIntent(intent, params, time)
+            console.log('[Employee Intent] 构建卡片:', card)
+            chatStore.addMessage(card)
+          } else {
+            // 未匹配，展示模型追问文本
+            chatStore.addMessage({
+              role: 'assistant',
+              content: fullText || '未识别到您的意图，请换一种方式描述。',
+              time,
+              noFeedback: true,
+            })
+          }
+          chatStore.setStreamContent('')
+          scrollToBottom()
+        },
+        onError(err) {
+          console.error('[Employee Intent Error]', err)
+          chatStore.setStreaming(false)
+          chatStore.setStreamContent('')
+          // 接口失败时使用本地兜底
+          const intent = detectIntent(content)
+          const card = generateMockCard(intent)
+          chatStore.addMessage(card)
+          scrollToBottom()
+        },
+      },
+    )
+
+    chatStore.setAbortController(controller)
     return
   }
 
@@ -162,7 +241,7 @@ async function handleSend() {
     : `${apiUrl}/ai/api/chatbot/chat`
 
   console.log('[Chatbot] Request URL:', url)
-  console.log('[Chatbot] Request body:', JSON.stringify({ prompt: content, sessionId: sessionStore.currentSessionId, chatSessionId: sessionStore.currentSessionId }))
+  console.log('[Chatbot] Request body:', JSON.stringify({ prompt: content, chatSessionId: sessionStore.currentSessionId }))
 
   const controller = createStreamRequest(
     url,
@@ -171,7 +250,6 @@ async function handleSend() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         prompt: content,
-        sessionId: sessionStore.currentSessionId,
         chatSessionId: sessionStore.currentSessionId,
       }),
     },
@@ -272,9 +350,28 @@ defineExpose({ messageContainer })
 
 // ===== 员工自助：意图识别 =====
 
-// 从 axios 响应中提取 data 字段（兼容 { code: 200, data: {...} } 包装格式）
-function extractData(res) {
-  return res?.data?.code === 200 ? res.data.data : res?.data
+// 从累积的 tool_calls 中提取意图和参数（Function Calling 模式）
+// accumulatedToolCalls 格式：{ 0: { function: { name: 'leave_request', arguments: '{"leaveType":"事假",...}' } } }
+function extractIntentFromToolCalls(accumulatedToolCalls) {
+  console.log('[Employee Intent] extractIntentFromToolCalls 入参:', JSON.stringify(accumulatedToolCalls))
+  if (!accumulatedToolCalls || typeof accumulatedToolCalls !== 'object' || Object.keys(accumulatedToolCalls).length === 0) {
+    return { intent: null, params: {} }
+  }
+  for (const key of Object.keys(accumulatedToolCalls)) {
+    const tc = accumulatedToolCalls[key]
+    try {
+      const intent = tc?.function?.name
+      const fnArgs = tc?.function?.arguments || ''
+      const params = fnArgs ? JSON.parse(fnArgs) : {}
+      if (intent) {
+        console.log('[Employee Intent] 匹配到意图:', intent, '参数:', params)
+        return { intent, params }
+      }
+    } catch (e) {
+      console.warn('[Employee Intent] tool_call 解析失败:', e, tc)
+    }
+  }
+  return { intent: null, params: {} }
 }
 
 // 格式化请假时间：若只有日期（YYYY-MM-DD），补充默认时分；若已有时分则原样返回
