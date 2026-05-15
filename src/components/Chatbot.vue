@@ -65,6 +65,7 @@ watch(() => modeStore.currentMode, (mode, prevMode) => {
     })
     scrollToBottom()
   } else if (prevMode === modeStore.MODES.TALENT_AGENT) {
+    chatStore.clearModelSessionId()
     chatStore.addMessage({
       role: 'system',
       content: '已退出人才发展模式，恢复为客服模式。',
@@ -109,6 +110,7 @@ async function handleSend() {
     console.log('[Employee Intent] 发起请求, URL:', `${apiUrl}/ai/api/intent/employee`)
     console.log('[Employee Intent] Request body:', JSON.stringify({
       prompt: content,
+      chatSessionId: sessionStore.currentSessionId,
       sessionId: chatStore.employeeSessionId || undefined,
     }))
 
@@ -122,6 +124,7 @@ async function handleSend() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           prompt: content,
+          chatSessionId: sessionStore.currentSessionId,
           sessionId: chatStore.employeeSessionId || undefined,
         }),
       },
@@ -241,7 +244,13 @@ async function handleSend() {
     : `${apiUrl}/ai/api/chatbot/chat`
 
   console.log('[Chatbot] Request URL:', url)
-  console.log('[Chatbot] Request body:', JSON.stringify({ prompt: content, chatSessionId: sessionStore.currentSessionId }))
+  console.log('[Chatbot] Request body:', JSON.stringify({
+    prompt: content,
+    chatSessionId: sessionStore.currentSessionId,
+    sessionId: chatStore.modelSessionId || undefined,
+  }))
+
+  let lastModelSessionId = null
 
   const controller = createStreamRequest(
     url,
@@ -251,16 +260,23 @@ async function handleSend() {
       body: JSON.stringify({
         prompt: content,
         chatSessionId: sessionStore.currentSessionId,
+        sessionId: chatStore.modelSessionId || undefined,
       }),
     },
     {
       onChunk(data) {
+        // 提取 model sessionId（用于多轮对话上下文）
+        if (data?.output?.session_id) {
+          lastModelSessionId = data.output.session_id
+        }
         let text = ''
         if (typeof data === 'string') {
           text = data
         } else if (data.output?.text !== undefined) {
           // 后端返回 { output: { text: '增量文本' } } 格式
           text = data.output.text
+        } else if (data.output?.choices?.[0]?.message?.content !== undefined) {
+          text = data.output.choices[0].message.content
         } else {
           text = data.content || data.text || data.delta || ''
         }
@@ -268,6 +284,10 @@ async function handleSend() {
         scrollToBottom()
       },
       onDone() {
+        // 保存 sessionId，后续请求回传
+        if (lastModelSessionId) {
+          chatStore.setModelSessionId(lastModelSessionId)
+        }
         if (chatStore.currentStreamContent) {
           chatStore.addMessage({
             role: 'assistant',

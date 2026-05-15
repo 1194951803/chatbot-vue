@@ -7,6 +7,7 @@ export const useChatStore = defineStore('chat', () => {
   const currentStreamContent = ref('')
   const abortController = ref(null)
   const employeeSessionId = ref(null)
+  const modelSessionId = ref(null)  // 普通客服/人才发展的大模型上下文标识
 
   function addMessage(msg) {
     messages.value.push(msg)
@@ -47,6 +48,14 @@ export const useChatStore = defineStore('chat', () => {
 
   function clearEmployeeSessionId() {
     employeeSessionId.value = null
+  }
+
+  function setModelSessionId(id) {
+    modelSessionId.value = id
+  }
+
+  function clearModelSessionId() {
+    modelSessionId.value = null
   }
 
   /**
@@ -94,5 +103,7 @@ export const useChatStore = defineStore('chat', () => {
     loadHistoryMessages,
     setEmployeeSessionId,
     clearEmployeeSessionId,
+    setModelSessionId,
+    clearModelSessionId,
   }
 })
