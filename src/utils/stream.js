@@ -32,6 +32,7 @@ export function createStreamRequest(url, options, { onChunk, onDone, onError }) 
       const reader = response.body.getReader()
       const decoder = new TextDecoder()
       let buffer = ''
+      let currentEvent = null  // 记录当前 event 类型
 
       while (true) {
         const { done, value } = await reader.read()
@@ -45,6 +46,10 @@ export function createStreamRequest(url, options, { onChunk, onDone, onError }) 
 
         for (const line of lines) {
           const trimmed = line.trim()
+          if (trimmed.startsWith('event:')) {
+            currentEvent = trimmed.slice(6).trim()
+            continue
+          }
           if (trimmed.startsWith('data:')) {
             const data = trimmed.slice(5).trim()
             if (data === '[DONE]') {
@@ -52,23 +57,39 @@ export function createStreamRequest(url, options, { onChunk, onDone, onError }) 
             }
             try {
               const parsed = JSON.parse(data)
+              // 如果有 event 类型，标记在 _eventType 上
+              if (currentEvent) {
+                parsed._eventType = currentEvent
+                currentEvent = null
+              }
               onChunk?.(parsed)
             } catch {
               // 非 JSON 数据，直接传递文本
-              onChunk?.(data)
+              if (typeof data === 'string' && data.length > 0) {
+                onChunk?.(data)
+              }
             }
           }
         }
       }
 
       // 处理剩余的 buffer
-      if (buffer.trim().startsWith('data:')) {
-        const data = buffer.trim().slice(5).trim()
-        if (data !== '[DONE]') {
-          try {
-            onChunk?.(JSON.parse(data))
-          } catch {
-            onChunk?.(data)
+      if (buffer.trim()) {
+        const trimmed = buffer.trim()
+        if (trimmed.startsWith('event:')) {
+          currentEvent = trimmed.slice(6).trim()
+        } else if (trimmed.startsWith('data:')) {
+          const data = trimmed.slice(5).trim()
+          if (data !== '[DONE]') {
+            try {
+              const parsed = JSON.parse(data)
+              if (currentEvent) {
+                parsed._eventType = currentEvent
+              }
+              onChunk?.(parsed)
+            } catch {
+              onChunk?.(data)
+            }
           }
         }
       }

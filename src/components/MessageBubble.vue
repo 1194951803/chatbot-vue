@@ -118,10 +118,9 @@ function getStatusType(status) {
           <div class="card-title">个人信息</div>
           <el-descriptions :column="1" border size="small">
             <el-descriptions-item label="姓名">{{ message.cardData.name }}</el-descriptions-item>
-            <el-descriptions-item label="工号">{{ message.cardData.employeeNo }}</el-descriptions-item>
-            <el-descriptions-item label="部门">{{ message.cardData.dept }}</el-descriptions-item>
-            <el-descriptions-item label="职位">{{ message.cardData.position }}</el-descriptions-item>
-            <el-descriptions-item label="入职日期">{{ message.cardData.joinDate }}</el-descriptions-item>
+            <el-descriptions-item label="单位">{{ message.cardData.unitName }}</el-descriptions-item>
+            <el-descriptions-item label="部门">{{ message.cardData.deptName }}</el-descriptions-item>
+            <el-descriptions-item label="岗位">{{ message.cardData.posName }}</el-descriptions-item>
             <el-descriptions-item label="邮箱">{{ message.cardData.email }}</el-descriptions-item>
             <el-descriptions-item label="手机">{{ message.cardData.phone }}</el-descriptions-item>
           </el-descriptions>

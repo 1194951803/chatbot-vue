@@ -131,6 +131,25 @@ async function handleSend() {
       {
         onChunk(data) {
           console.log('[Employee Intent] onChunk 收到数据:', JSON.stringify(data))
+
+          // ===== 处理 tool_complete 事件（后端注入业务数据后的完整 tool_calls） =====
+          if (data._eventType === 'tool_complete') {
+            console.log('[Employee Intent] 收到 tool_complete 事件:', JSON.stringify(data))
+            if (data.session_id) {
+              lastSessionId = data.session_id
+              console.log('[Employee Intent] 提取 sessionId:', lastSessionId)
+            }
+            // tool_complete.tool_calls 格式：{"name":"xxx","arguments":{...完整数据...}}
+            const tc = data.tool_calls
+            if (tc?.name) {
+              // 直接覆盖，使用后端注入的完整数据
+              accumulatedToolCalls = { 0: { id: '', function: { name: tc.name, arguments: typeof tc.arguments === 'string' ? tc.arguments : JSON.stringify(tc.arguments || {}) } } }
+              console.log('[Employee Intent] tool_complete 覆盖 tool_calls:', JSON.stringify(accumulatedToolCalls))
+            }
+            // tool_complete 不包含文本内容，直接返回
+            return
+          }
+
           // 提取 sessionId（每帧都可能包含，取最新的）
           if (data?.output?.session_id) {
             lastSessionId = data.output.session_id
@@ -426,21 +445,21 @@ function buildCardFromIntent(intent, params, time) {
       }
     }
     case 'salary_query': {
-      const month = params.queryMonth || '本月'
+      const month = params.queryMonth || params.month || '本月'
       return {
         role: 'assistant',
         type: 'interactive_card',
         cardType: 'salary',
         cardData: {
           month,
-          baseSalary: '15,000.00',
-          performance: '3,500.00',
-          allowance: '800.00',
-          grossSalary: '20,500.00',
-          socialSecurity: '2,100.00',
-          housingFund: '1,200.00',
-          tax: '680.00',
-          netSalary: '16,520.00',
+          baseSalary: params.baseSalary || '15,000.00',
+          performance: params.performance || '3,500.00',
+          allowance: params.allowance || '800.00',
+          grossSalary: params.grossSalary || '20,500.00',
+          socialSecurity: params.socialSecurity || '2,100.00',
+          housingFund: params.housingFund || '1,200.00',
+          tax: params.tax || '680.00',
+          netSalary: params.netSalary || '16,520.00',
         },
         time,
         noFeedback: true,
@@ -452,13 +471,13 @@ function buildCardFromIntent(intent, params, time) {
         type: 'interactive_card',
         cardType: 'profile',
         cardData: {
-          name: '张三',
-          dept: '技术研发部',
-          position: '高级工程师',
-          employeeNo: 'EMP2024001',
-          joinDate: '2020-03-15',
-          email: 'zhangsan@company.com',
-          phone: '138****5678',
+          staffId: params.员工编号 || params.staff_id || '',
+          name: params.姓名 || params.name || '',
+          unitName: params.单位 || params.unit_name || '',
+          deptName: params.部门 || params.dept_name || '',
+          posName: params.岗位 || params.pos_name || '',
+          email: params.邮箱 || params.email || '',
+          phone: params.手机号 || params.phone || '',
         },
         time,
         noFeedback: true,
@@ -468,7 +487,7 @@ function buildCardFromIntent(intent, params, time) {
         role: 'assistant',
         type: 'interactive_card',
         cardType: 'records',
-        cardData: [
+        cardData: Array.isArray(params.records) ? params.records : [
           { type: '请假', title: '年假申请', date: '2026-04-10', status: '已通过' },
           { type: '请假', title: '事假申请', date: '2026-04-01', status: '已驳回' },
           { type: '报销', title: '差旅费报销', date: '2026-03-28', status: '审批中' },
