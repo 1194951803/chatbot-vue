@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
+import { parseEmployeeAnswer, parseFileContent, buildCardFromToolCall, formatHistoryTime } from '../utils/historyMapper'
 
 export const useChatStore = defineStore('chat', () => {
   const messages = ref([])
@@ -59,24 +60,94 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   /**
-   * 加载历史消息（从后端返回的 question/answer 对映射为前端消息格式）
+   * 加载历史消息（从后端 FileChatHistoryMessageVo 映射为前端消息格式）
    */
   function loadHistoryMessages(pairs) {
     const mapped = []
-    for (const pair of pairs) {
-      const time = formatTs(pair.createTs)
-      if (pair.question) {
-        mapped.push({ role: 'user', content: pair.question, time })
-      }
-      if (pair.answer) {
-        mapped.push({
-          role: 'assistant',
-          content: pair.answer,
-          time,
-          rating: pair.rating || 0,
-        })
+
+    for (const item of pairs) {
+      const functype = item.functype ?? 0
+      const time = formatHistoryTime(item)
+
+      switch (functype) {
+        case 0:  // 客服模式 — 普通 Markdown 文本
+        case 4: {  // 人才发展模式
+          if (item.question) {
+            mapped.push({ role: 'user', content: item.question, time })
+          }
+          if (item.answer) {
+            mapped.push({
+              role: 'assistant',
+              content: item.answer,
+              time,
+              rating: item.rating || 0,
+            })
+          }
+          break
+        }
+
+        case 2: {  // 文件转换模式
+          if (item.question) {
+            mapped.push({ role: 'user', content: item.question, time })
+          }
+          if (item.files && item.files.length > 0) {
+            mapped.push({
+              role: 'assistant',
+              type: 'file_list',
+              files: item.files.map((f, idx) => ({
+                index: idx + 1,
+                fileId: f.uuid || `hist-file-${item.uuid || 'unknown'}-${idx}`,
+                fileName: f.fileName || 'Unknown',
+                ossUrl: null,
+                uploadTime: time || '',
+                status: f.status === 1 ? 'extracted' : 'failed',
+                fileStatus: f.status === 1 ? 'success' : 'failed',
+                statusMessage: f.status === 1 ? '文件解析完成' : '解析失败',
+                extractedData: parseFileContent(f.fileContent),
+                isExtracting: false,
+                extractError: f.status !== 1 ? '解析失败' : '',
+              })),
+              rejected: [],
+              time,
+              noFeedback: true,
+              _version: 0,
+            })
+          }
+          break
+        }
+
+        case 3: {  // 员工自助模式
+          if (item.question) {
+            mapped.push({ role: 'user', content: item.question, time })
+          }
+          if (item.answer) {
+            const parsed = parseEmployeeAnswer(item.answer)
+            if (parsed && parsed.tool_calls && parsed.tool_calls.name) {
+              mapped.push(buildCardFromToolCall(parsed.tool_calls, time))
+            } else if (parsed && parsed.content) {
+              mapped.push({ role: 'assistant', content: parsed.content, time, noFeedback: true })
+            }
+          }
+          break
+        }
+
+        default: {  // 未知 functype，按客服模式处理
+          if (item.question) {
+            mapped.push({ role: 'user', content: item.question, time })
+          }
+          if (item.answer) {
+            mapped.push({
+              role: 'assistant',
+              content: item.answer,
+              time,
+              rating: item.rating || 0,
+            })
+          }
+          break
+        }
       }
     }
+
     messages.value = mapped
   }
 

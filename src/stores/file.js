@@ -21,6 +21,10 @@ export const useFileStore = defineStore('file', () => {
   // 汇总视图显示状态（与单文件预览互斥）
   const showSummaryView = ref(false)
 
+  // 年度考核列表面板显示状态（与单文件预览/汇总视图互斥）
+  const showAssessmentView = ref(false)
+  const assessmentUrl = ref('')
+
   // 每文件独立管理的 poll 定时器和提取 controller
   const fileStatusPollTimers = new Map()
   const extractControllers = new Map()
@@ -99,6 +103,21 @@ export const useFileStore = defineStore('file', () => {
 
   function closeSummaryView() {
     showSummaryView.value = false
+  }
+
+  /**
+   * 打开/关闭年度考核列表面板（与单文件预览/汇总视图互斥）
+   */
+  function setShowAssessmentView(url) {
+    showAssessmentView.value = true
+    assessmentUrl.value = url
+    activePreviewFileId.value = ''
+    showSummaryView.value = false
+  }
+
+  function closeAssessmentView() {
+    showAssessmentView.value = false
+    assessmentUrl.value = ''
   }
 
   /**
@@ -186,6 +205,8 @@ export const useFileStore = defineStore('file', () => {
     fileRecords.value = []
     activePreviewFileId.value = ''
     showSummaryView.value = false
+    showAssessmentView.value = false
+    assessmentUrl.value = ''
   }
 
   return {
@@ -199,6 +220,8 @@ export const useFileStore = defineStore('file', () => {
     fileRecords,
     activePreviewFileId,
     showSummaryView,
+    showAssessmentView,
+    assessmentUrl,
     activeFileRecord,
     getFileRecord,
     addFileRecord,
@@ -207,6 +230,8 @@ export const useFileStore = defineStore('file', () => {
     clearActivePreview,
     setShowSummaryView,
     closeSummaryView,
+    setShowAssessmentView,
+    closeAssessmentView,
     areAllFilesExtracted,
     startFileStatusPoll,
     stopFileStatusPoll,

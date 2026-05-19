@@ -12,6 +12,7 @@ import Chatbot from './Chatbot.vue'
 import FileUpload from './FileUpload.vue'
 import FilePreview from './FilePreview.vue'
 import FileSummaryView from './FileSummaryView.vue'
+import AssessmentListView from './AssessmentListView.vue'
 
 const chatStore = useChatStore()
 const sessionStore = useSessionStore()
@@ -44,9 +45,9 @@ onMounted(async () => {
   }
 })
 
-// 监听预览/汇总状态自动最大化
-watch([() => fileStore.activePreviewFileId, () => fileStore.showSummaryView], ([previewId, summary]) => {
-  isMaximized.value = !!previewId || summary
+// 监听预览/汇总/考核面板状态自动最大化
+watch([() => fileStore.activePreviewFileId, () => fileStore.showSummaryView, () => fileStore.showAssessmentView], ([previewId, summary, assessment]) => {
+  isMaximized.value = !!previewId || summary || assessment
 })
 
 // 监听文件转换模式切换
@@ -457,6 +458,11 @@ function handleCloseSummary() {
   fileStore.closeSummaryView()
 }
 
+// 关闭考核列表面板
+function handleCloseAssessment() {
+  fileStore.closeAssessmentView()
+}
+
 // 确认提交汇总数据
 async function handleConfirmSummary(selectedRows) {
   try {
@@ -620,6 +626,14 @@ const activeFileName = computed(() => {
             :file-name="activeFileName"
             @confirm="handleConfirmSingle"
             @cancel="handleCancelPreview"
+          />
+        </div>
+        <!-- 年度考核列表面板 -->
+        <div v-else-if="fileStore.showAssessmentView" class="preview-area">
+          <AssessmentListView
+            :key="fileStore.assessmentUrl"
+            :url="fileStore.assessmentUrl"
+            @close="handleCloseAssessment"
           />
         </div>
       </div>

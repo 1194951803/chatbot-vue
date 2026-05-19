@@ -3,6 +3,7 @@ import { ref, nextTick, computed, onMounted, watch } from 'vue'
 import { useChatStore } from '../stores/chat'
 import { useModeStore } from '../stores/mode'
 import { useSessionStore } from '../stores/session'
+import { useFileStore } from '../stores/file'
 import { createStreamRequest } from '../utils/stream'
 import { renderMarkdown } from '../utils/markdown'
 import MessageBubble from './MessageBubble.vue'
@@ -11,6 +12,7 @@ const emit = defineEmits(['file-action'])
 const chatStore = useChatStore()
 const modeStore = useModeStore()
 const sessionStore = useSessionStore()
+const fileStore = useFileStore()
 
 const messageInput = ref('')
 const messageContainer = ref(null)
@@ -496,14 +498,19 @@ function buildCardFromIntent(intent, params, time) {
         time,
         noFeedback: true,
       }
-    case 'annual_assessment':
-    case 'performance_goals':
+    case 'annual_assessment': {
+      // 触发右侧面板展示考核列表
+      if (params.url) {
+        fileStore.setShowAssessmentView(params.url)
+      }
       return {
         role: 'assistant',
-        content: '该功能正在开发中，敬请期待。',
+        content: '正在为您查询年度考核项目信息，请查看右侧列表。',
         time,
         noFeedback: true,
       }
+    }
+    case 'performance_goals':
     default:
       return {
         role: 'assistant',
@@ -629,6 +636,10 @@ function handleCardAction(message, payload) {
       time: getCurrentTime(),
       noFeedback: true,
     })
+  } else if (payload?.action === 'open_assessment' && payload.url) {
+    fileStore.setShowAssessmentView(payload.url)
+    scrollToBottom()
+    return
   }
   scrollToBottom()
 }

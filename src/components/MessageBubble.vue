@@ -191,6 +191,24 @@ function getStatusType(status) {
       />
     </template>
 
+    <!-- 工具调用评估链接（functype=3 且包含 URL）— 必须在 assistant 之前判断 -->
+    <template v-else-if="message.type === 'tool_assessment'">
+      <div class="tool-assessment-msg">
+        <div class="tool-assessment-content">
+          <span class="tool-assessment-text">{{ message.content }}</span>
+          <button class="tool-assessment-btn" @click="$emit('card-action', message, { action: 'open_assessment', url: message.url })">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+              <polyline points="15 3 21 3 21 9" />
+              <line x1="10" y1="14" x2="21" y2="3" />
+            </svg>
+            查看{{ message.toolName || '详情' }}
+          </button>
+        </div>
+        <div class="message-time">{{ message.time }}</div>
+      </div>
+    </template>
+
     <!-- AI 回复 -->
     <template v-else-if="message.role === 'assistant'">
       <div
@@ -612,5 +630,49 @@ function getStatusType(status) {
 
 :deep(.el-descriptions__content) {
   font-size: 13px;
+}
+
+/* 工具调用评估链接 */
+.tool-assessment-msg {
+  background: #fff;
+  border: 1px solid #e8e8e8;
+  border-radius: 10px;
+  padding: 14px;
+  max-width: 90%;
+  min-width: 260px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
+}
+
+.tool-assessment-content {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.tool-assessment-text {
+  flex: 1;
+  font-size: 14px;
+  color: #333;
+  line-height: 1.5;
+}
+
+.tool-assessment-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 14px;
+  background: #409eff;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s;
+}
+
+.tool-assessment-btn:hover {
+  background: #3a8ee6;
 }
 </style>
