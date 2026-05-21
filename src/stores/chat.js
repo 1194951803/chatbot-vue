@@ -123,7 +123,7 @@ export const useChatStore = defineStore('chat', () => {
           if (item.answer) {
             const parsed = parseEmployeeAnswer(item.answer)
             if (parsed && parsed.tool_calls && parsed.tool_calls.name) {
-              mapped.push(buildCardFromToolCall(parsed.tool_calls, time))
+              mapped.push(buildCardFromToolCall(parsed.tool_calls, parsed, time))
             } else if (parsed && parsed.content) {
               mapped.push({ role: 'assistant', content: parsed.content, time, noFeedback: true })
             }

@@ -24,7 +24,7 @@ export function parseFileContent(fileContent) {
 }
 
 /** 将 tool_call 对象转为 interactive_card 消息 */
-export function buildCardFromToolCall(toolCall, time) {
+export function buildCardFromToolCall(toolCall, parsed, time) {
   const name = toolCall.name
   const args = typeof toolCall.arguments === 'string'
     ? (() => { try { return JSON.parse(toolCall.arguments) } catch { return {} } })()
@@ -70,12 +70,23 @@ export function buildCardFromToolCall(toolCall, time) {
         time, noFeedback: true,
       }
 
-    case 'application_records':
-      return {
-        role: 'assistant', type: 'interactive_card', cardType: 'records',
-        cardData: Array.isArray(args.records) ? args.records : [],
-        time, noFeedback: true,
+    case 'personal_records': {
+      // 含 URL 时渲染可点击消息框打开右侧报告面板
+      if (args.url) {
+        return {
+          role: 'assistant',
+          type: 'tool_assessment',
+          content: parsed?.content || '正在查询个人报告...',
+          toolName: '预览',
+          url: args.url,
+          time,
+          noFeedback: true,
+        }
       }
+      return {
+        role: 'assistant', content: parsed?.content || '', time, noFeedback: true,
+      }
+    }
 
     case 'annual_assessment': {
       // 工具参数包含 URL 时，渲染可点击消息框打开右侧考核面板
@@ -83,15 +94,15 @@ export function buildCardFromToolCall(toolCall, time) {
         return {
           role: 'assistant',
           type: 'tool_assessment',
-          content: args.content || '正在查询年度考核信息...',
-          toolName: '年度考核',
+          content: parsed?.content || '正在查询年度考核信息...',
+          toolName: '预览',
           url: args.url,
           time,
           noFeedback: true,
         }
       }
       return {
-        role: 'assistant', content: args.content || '正在查询年度考核信息...', time, noFeedback: true,
+        role: 'assistant', content: parsed?.content || '正在查询年度考核信息...', time, noFeedback: true,
       }
     }
 
@@ -101,14 +112,14 @@ export function buildCardFromToolCall(toolCall, time) {
         return {
           role: 'assistant',
           type: 'tool_assessment',
-          content: args.content || `正在调用 ${name}...`,
-          toolName: name,
+          content: parsed?.content || `正在调用 ${name}...`,
+          toolName: '预览',
           url: args.url,
           time,
           noFeedback: true,
         }
       }
-      return { role: 'assistant', content: args.content || '', time, noFeedback: true }
+      return { role: 'assistant', content: parsed?.content || '', time, noFeedback: true }
     }
   }
 }
