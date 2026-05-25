@@ -118,7 +118,7 @@ data:{"output":{"text":"增量文本","finish_reason":null},"request_status":fal
 | `chatStore` | 消息列表、流式响应状态（isStreaming）、流式内容（currentStreamContent）、中断控制（abortController/abortStream）、`appendStreamContent` 追加增量、`loadHistoryMessages` 加载历史消息 |
 | `sessionStore` | 会话列表（后端分页加载）、当前会话 ID、新建/切换/删除、历史消息加载 |
 | `fileStore` | 文件上传进度、OSS 直传状态、解析记录列表（fileRecords）、预览文件管理（activePreviewFileId/activeFileRecord）、单文件轮询定时器 |
-| `modeStore` | 当前模式（MODES 常量：customer_service/file_convert/talent_agent/employee_self）、头像切换 |
+| `modeStore` | 当前模式（MODES 常量：customer_service/file_convert/talent_agent/employee_self/leadership_analysis）、头像切换 |
 
 ## 关键行为
 
@@ -133,7 +133,7 @@ data:{"output":{"text":"增量文本","finish_reason":null},"request_status":fal
 ### 消息收发
 
 - 发送：Enter 键或点击发送按钮，Shift+Enter 换行。
-- 模式路由：人才发展模式（`talent_agent`）走 `/ai/api/person/post/match`，普通模式走 `/ai/api/chatbot/chat`，员工自助模式（`employee_self`）调用 `/ai/api/intent/employee` 进行意图识别 + 后端返回参数生成卡片，接口失败时兜底本地识别。
+- 模式路由：人才发展模式（`talent_agent`）走 `/ai/api/person/post/match`，班子研判模式（`leadership_analysis`）走 `/ai/api/stream/leader/ship`，普通模式走 `/ai/api/chatbot/chat`，员工自助模式（`employee_self`）调用 `/ai/api/intent/employee` 进行意图识别 + 后端返回参数生成卡片，接口失败时兜底本地识别。
 - 请求参数：`{ prompt: content, sessionId: sessionId, chatSessionId: sessionId }`（注意是 `prompt` 字段，不是 `message`）。
 
 ### 文件转换流程（批量上传 + SSE 流式解析）
@@ -312,22 +312,23 @@ AI 回复完成后（非流式中）显示反馈工具栏：
 
 ## API 端点
 
-| 端点 | 用途 | 状态 |
-|---|---|---|
-| `/ai/api/chatbot/chat` | 聊天消息接口（流式响应） | 已对接 |
-| `/ai/api/person/post/match` | 人才发现智能体接口（流式响应） | 已对接 |
-| `/ai/api/file/sts` | 获取 OSS STS 临时上传凭证 | 已对接 |
-| `/ai/api/file/batch/parse` | 批量文件解析（SSE 流式，event:file/event:done） | 已对接 |
-| `/ai/api/file/retry` | 单文件重试解析（SSE 流式） | 已对接 |
-| `/ai/api/file/confirm` | 确认提交文件数据 | 已对接 |
-| `/ai/api/file/summary` | 获取文件汇总数据 | 待对接 |
-| `/ai/api/file/excel` | 文件转 Excel 下载 | 待对接 |
-| `/ai/api/file/batch/excel` | 批量导出合并 Excel | 待对接 |
-| `/ai/api/chat/session/list` | 会话列表（分页） | 已对接 |
-| `/ai/api/chat/session` | 新建会话 | 已对接 |
-| `/ai/api/chat/session/{id}` | 删除会话 | 已对接 |
+| 端点                                   | 用途 | 状态 |
+|--------------------------------------|---|---|
+| `/ai/api/chatbot/chat`               | 聊天消息接口（流式响应） | 已对接 |
+| `/ai/api/person/post/match`          | 人才发现智能体接口（流式响应） | 已对接 |
+| `/ai/api/stream/leader/ship`         | 班子研判智能体接口（流式响应） | 已对接 |
+| `/ai/api/file/sts`                   | 获取 OSS STS 临时上传凭证 | 已对接 |
+| `/ai/api/file/batch/parse`           | 批量文件解析（SSE 流式，event:file/event:done） | 已对接 |
+| `/ai/api/file/retry`                 | 单文件重试解析（SSE 流式） | 已对接 |
+| `/ai/api/file/confirm`               | 确认提交文件数据 | 已对接 |
+| `/ai/api/file/summary`               | 获取文件汇总数据 | 待对接 |
+| `/ai/api/file/excel`                 | 文件转 Excel 下载 | 待对接 |
+| `/ai/api/file/batch/excel`           | 批量导出合并 Excel | 待对接 |
+| `/ai/api/chat/session/list`          | 会话列表（分页） | 已对接 |
+| `/ai/api/chat/session`               | 新建会话 | 已对接 |
+| `/ai/api/chat/session/{id}`          | 删除会话 | 已对接 |
 | `/ai/api/chat/session/{id}/messages` | 历史消息查询 | 已对接 |
-| `/ai/api/chatbot/feedback` | 消息反馈上报（赞/踩） | 待对接 |
+| `/ai/api/chatbot/feedback`           | 消息反馈上报（赞/踩） | 待对接 |
 
 > 旧版 `/ai/api/file/upload`（服务端上传）、`/ai/api/file/status`（轮询状态）、`/ai/api/stream/analysis/extract`（提取）已废弃，新流程改为前端 STS 直传 OSS + 批量 SSE 解析。
 
@@ -353,6 +354,7 @@ window.CHATBOT_CONFIG = {
     { label: '人才发展', mode: 'talent_agent' },
     { label: '文件转换', mode: 'file_convert' },
     { label: '员工自助', mode: 'employee_self' },
+    { label: '班子研判', mode: 'leadership_analysis' },
   ],
   mockExtract: false,   // 是否使用模拟数据（调试用）
 }

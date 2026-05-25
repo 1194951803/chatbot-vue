@@ -6,9 +6,10 @@ export const useChatStore = defineStore('chat', () => {
   const messages = ref([])
   const isStreaming = ref(false)
   const currentStreamContent = ref('')
+  const currentThoughtContent = ref('')  // 思考过程（班子研判/人才发展）
   const abortController = ref(null)
   const employeeSessionId = ref(null)
-  const modelSessionId = ref(null)  // 普通客服/人才发展的大模型上下文标识
+  const modelSessionId = ref(null)  // 普通客服/人才发展/班子研判的大模型上下文标识
 
   function addMessage(msg) {
     messages.value.push(msg)
@@ -25,6 +26,18 @@ export const useChatStore = defineStore('chat', () => {
 
   function appendStreamContent(text) {
     currentStreamContent.value += text
+  }
+
+  function setThoughtContent(content) {
+    currentThoughtContent.value = content
+  }
+
+  function appendThoughtContent(text) {
+    currentThoughtContent.value += text
+  }
+
+  function clearThoughtContent() {
+    currentThoughtContent.value = ''
   }
 
   function setAbortController(controller) {
@@ -162,12 +175,17 @@ export const useChatStore = defineStore('chat', () => {
     messages,
     isStreaming,
     currentStreamContent,
+    currentThoughtContent,
     abortController,
     employeeSessionId,
+    modelSessionId,
     addMessage,
     setStreaming,
     setStreamContent,
     appendStreamContent,
+    setThoughtContent,
+    appendThoughtContent,
+    clearThoughtContent,
     setAbortController,
     abortStream,
     clearMessages,

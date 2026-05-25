@@ -7,6 +7,7 @@ const MODES = {
   FILE_CONVERT: 'file_convert', // 文件转换
   TALENT_AGENT: 'talent_agent', // 人才发现智能体
   EMPLOYEE_SELF: 'employee_self', // 员工自助
+  LEADERSHIP_ANALYSIS: 'leadership_analysis', // 班子研判
 }
 
 const DEFAULT_MODE = MODES.CUSTOMER_SERVICE
@@ -19,6 +20,7 @@ function getDefaultAvatars() {
     [MODES.FILE_CONVERT]: config.fileConvert || '',
     [MODES.TALENT_AGENT]: config.talentAgent || '',
     [MODES.EMPLOYEE_SELF]: config.employeeSelf || '',
+    [MODES.LEADERSHIP_ANALYSIS]: config.leadershipAnalysis || '',
   }
 }
 

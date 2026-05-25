@@ -1,5 +1,5 @@
 <script setup>
-import { ref, nextTick, computed, onMounted, watch } from 'vue'
+import { ref, nextTick, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useChatStore } from '../stores/chat'
 import { useModeStore } from '../stores/mode'
 import { useSessionStore } from '../stores/session'
@@ -8,7 +8,7 @@ import { createStreamRequest } from '../utils/stream'
 import { renderMarkdown } from '../utils/markdown'
 import MessageBubble from './MessageBubble.vue'
 
-const emit = defineEmits(['file-action'])
+const emit = defineEmits(['file-action', 'upload-click', 'voice-click'])
 const chatStore = useChatStore()
 const modeStore = useModeStore()
 const sessionStore = useSessionStore()
@@ -16,21 +16,39 @@ const fileStore = useFileStore()
 
 const messageInput = ref('')
 const messageContainer = ref(null)
+const isVoiceRecording = ref(false)
+let recognition = null
 
 const config = window.CHATBOT_CONFIG || {}
 const quickActions = config.quickActions || [
   { label: '人才发展', mode: 'talent_agent' },
   { label: '文件转换', mode: 'file_convert' },
   { label: '员工自助', mode: 'employee_self' },
+  { label: '班子研判', mode: 'leadership_analysis' },
 ]
 const greeting = config.greeting || '你好！我是 AI 助手，有什么可以帮助你的吗？'
 
 const streamingHtml = computed(() => renderMarkdown(chatStore.currentStreamContent))
 
+const showDropdown = ref(false)
+
+function getCurrentModeLabel() {
+  const current = quickActions.find((a) => a.mode === modeStore.currentMode)
+  return current ? current.label : '切换功能'
+}
+
 // 初始化会话（由父组件 ChatbotContainer 负责加载）
 onMounted(() => {
-  // 会话列表已由父组件初始化
+  document.addEventListener('click', closeDropdown)
 })
+
+onUnmounted(() => {
+  document.removeEventListener('click', closeDropdown)
+})
+
+function closeDropdown() {
+  showDropdown.value = false
+}
 
 // 监听历史消息加载完成，滚动到底部
 watch(() => chatStore.messages.length, (newLen) => {
@@ -41,16 +59,8 @@ watch(() => chatStore.messages.length, (newLen) => {
 
 // 监听模式切换，发送入口/退出提示
 watch(() => modeStore.currentMode, (mode, prevMode) => {
-  if (mode === modeStore.MODES.EMPLOYEE_SELF) {
-    chatStore.addMessage({
-      role: 'assistant',
-      content: '已进入员工自助模式。您可以告诉我需要什么帮助，例如：请假申请、薪酬查询、个人信息、申请记录、年度考核、绩效目标等。',
-      time: getCurrentTime(),
-      noFeedback: true,
-    })
-    scrollToBottom()
-  } else if (prevMode === modeStore.MODES.EMPLOYEE_SELF) {
-    // 清除本地 sessionId，下次进入自动创建新会话
+  // 退出提示：仅退出到客服模式时发
+  if (prevMode === modeStore.MODES.EMPLOYEE_SELF && mode === modeStore.MODES.CUSTOMER_SERVICE) {
     chatStore.clearEmployeeSessionId()
     chatStore.addMessage({
       role: 'system',
@@ -58,19 +68,64 @@ watch(() => modeStore.currentMode, (mode, prevMode) => {
       time: getCurrentTime(),
     })
     scrollToBottom()
-  } else if (mode === modeStore.MODES.TALENT_AGENT) {
-    chatStore.addMessage({
-      role: 'assistant',
-      content: '已进入人才发展模式。请描述您的岗位需求或人员信息，我将为您推荐匹配的人才或岗位建议。',
-      time: getCurrentTime(),
-      noFeedback: true,
-    })
-    scrollToBottom()
-  } else if (prevMode === modeStore.MODES.TALENT_AGENT) {
+    return
+  }
+  if (prevMode === modeStore.MODES.TALENT_AGENT && mode === modeStore.MODES.CUSTOMER_SERVICE) {
     chatStore.clearModelSessionId()
     chatStore.addMessage({
       role: 'system',
       content: '已退出人才发展模式，恢复为客服模式。',
+      time: getCurrentTime(),
+    })
+    scrollToBottom()
+    return
+  }
+  if (prevMode === modeStore.MODES.LEADERSHIP_ANALYSIS && mode === modeStore.MODES.CUSTOMER_SERVICE) {
+    chatStore.clearModelSessionId()
+    chatStore.addMessage({
+      role: 'system',
+      content: '已退出班子研判模式，恢复为客服模式。',
+      time: getCurrentTime(),
+    })
+    scrollToBottom()
+    return
+  }
+  if (prevMode === modeStore.MODES.FILE_CONVERT && mode === modeStore.MODES.CUSTOMER_SERVICE) {
+    chatStore.addMessage({
+      role: 'system',
+      content: '已退出文件转换模式，恢复为客服模式。',
+      time: getCurrentTime(),
+    })
+    scrollToBottom()
+    return
+  }
+
+  // 进入提示
+  if (mode === modeStore.MODES.EMPLOYEE_SELF) {
+    chatStore.addMessage({
+      role: 'system',
+      content: '已进入员工自助模式。您可以告诉我需要什么帮助，例如：请假申请、薪酬查询、个人信息、申请记录、年度考核、绩效目标等。',
+      time: getCurrentTime(),
+    })
+    scrollToBottom()
+  } else if (mode === modeStore.MODES.TALENT_AGENT) {
+    chatStore.addMessage({
+      role: 'system',
+      content: '已进入人才发展模式。请描述您的岗位需求或人员信息，我将为您推荐匹配的人才或岗位建议。',
+      time: getCurrentTime(),
+    })
+    scrollToBottom()
+  } else if (mode === modeStore.MODES.LEADERSHIP_ANALYSIS) {
+    chatStore.addMessage({
+      role: 'system',
+      content: '已进入班子研判模式。请描述您想了解的班子情况，例如班子结构、年龄梯队、专业分布等，我将为您进行分析。',
+      time: getCurrentTime(),
+    })
+    scrollToBottom()
+  } else if (mode === modeStore.MODES.FILE_CONVERT) {
+    chatStore.addMessage({
+      role: 'system',
+      content: '已进入文件转换模式。请上传需要转换的文件。',
       time: getCurrentTime(),
     })
     scrollToBottom()
@@ -258,11 +313,15 @@ async function handleSend() {
   chatStore.setStreamContent('')
 
   // 根据模式选择接口
-  const isAgentMode = modeStore.currentMode === modeStore.MODES.TALENT_AGENT
+  const currentMode = modeStore.currentMode
+  const isTalentAgent = currentMode === modeStore.MODES.TALENT_AGENT
+  const isLeadership = currentMode === modeStore.MODES.LEADERSHIP_ANALYSIS
   const apiUrl = window.CHATBOT_CONFIG?.baseUrl ?? ''
-  const url = isAgentMode
+  const url = isTalentAgent
     ? `${apiUrl}/ai/api/person/post/match`
-    : `${apiUrl}/ai/api/chatbot/chat`
+    : isLeadership
+      ? `${apiUrl}/ai/api/stream/leader/ship`
+      : `${apiUrl}/ai/api/chatbot/chat`
 
   console.log('[Chatbot] Request URL:', url)
   console.log('[Chatbot] Request body:', JSON.stringify({
@@ -272,6 +331,8 @@ async function handleSend() {
   }))
 
   let lastModelSessionId = null
+  let accumulatedThoughtText = ''  // 累积思考过程文本
+  let thoughtSeen = new Set()  // 去重：已累积的 thought 内容
 
   const controller = createStreamRequest(
     url,
@@ -302,6 +363,24 @@ async function handleSend() {
           text = data.content || data.text || data.delta || ''
         }
         chatStore.appendStreamContent(text)
+
+        // 提取思考过程
+        if (data.output?.thoughts && Array.isArray(data.output.thoughts)) {
+          for (const t of data.output.thoughts) {
+            let thoughtText = ''
+            if (t.action_type === 'reasoning' && t.thought && t.thought.length > 0) {
+              thoughtText = t.thought
+            } else if (t.action_type === 'agentRag' && t.observation && t.observation.length > 0) {
+              thoughtText = t.observation
+            }
+            if (thoughtText && !thoughtSeen.has(thoughtText)) {
+              thoughtSeen.add(thoughtText)
+              accumulatedThoughtText += thoughtText
+              chatStore.setThoughtContent(accumulatedThoughtText)
+            }
+          }
+        }
+
         scrollToBottom()
       },
       onDone() {
@@ -310,12 +389,17 @@ async function handleSend() {
           chatStore.setModelSessionId(lastModelSessionId)
         }
         if (chatStore.currentStreamContent) {
-          chatStore.addMessage({
+          const msg = {
             role: 'assistant',
             content: chatStore.currentStreamContent,
             time: getCurrentTime(),
-          })
+          }
+          if (chatStore.currentThoughtContent) {
+            msg.thoughtContent = chatStore.currentThoughtContent
+          }
+          chatStore.addMessage(msg)
           chatStore.setStreamContent('')
+          chatStore.clearThoughtContent()
         }
         chatStore.setStreaming(false)
         scrollToBottom()
@@ -355,6 +439,59 @@ function handleQuickAction(action) {
     modeStore.switchMode(modeStore.MODES.CUSTOMER_SERVICE)
   } else {
     modeStore.switchMode(action.mode)
+  }
+  showDropdown.value = false
+}
+
+function toggleDropdown() {
+  showDropdown.value = !showDropdown.value
+}
+
+// 语音输入
+function toggleVoice() {
+  if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
+    alert('当前浏览器不支持语音输入，请使用 Chrome 浏览器')
+    return
+  }
+  if (isVoiceRecording.value) {
+    stopVoice()
+    return
+  }
+  startVoice()
+}
+
+function startVoice() {
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
+  recognition = new SpeechRecognition()
+  recognition.lang = 'zh-CN'
+  recognition.interimResults = true
+  recognition.continuous = false
+
+  recognition.onresult = (event) => {
+    let text = ''
+    for (let i = 0; i < event.results.length; i++) {
+      text += event.results[i][0].transcript
+    }
+    messageInput.value = text
+  }
+
+  recognition.onend = () => {
+    isVoiceRecording.value = false
+    recognition = null
+  }
+
+  recognition.onerror = () => {
+    isVoiceRecording.value = false
+    recognition = null
+  }
+
+  recognition.start()
+  isVoiceRecording.value = true
+}
+
+function stopVoice() {
+  if (recognition) {
+    recognition.stop()
   }
 }
 
@@ -686,21 +823,59 @@ function handleFileAction(message) {
 
     <!-- 输入区域 -->
     <div class="input-area">
-      <!-- 快捷操作按钮 -->
-      <div class="quick-actions">
-        <button
-          v-for="action in quickActions"
-          :key="action.mode"
-          class="action-btn"
-          :class="{ active: modeStore.currentMode === action.mode }"
-          @click="handleQuickAction(action)"
-        >
-          {{ action.label }}
+      <!-- 快捷操作下拉菜单 -->
+      <div class="mode-selector" @click.stop>
+        <button class="mode-selector-trigger" :class="{ open: showDropdown }" @click="toggleDropdown">
+          <span>{{ getCurrentModeLabel() }}</span>
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="6 9 12 15 18 9" />
+          </svg>
         </button>
+        <div v-if="showDropdown" class="mode-dropdown">
+          <div
+            v-for="action in quickActions"
+            :key="action.mode"
+            class="mode-dropdown-item"
+            :class="{ active: modeStore.currentMode === action.mode }"
+            @click="handleQuickAction(action)"
+          >
+            <span>{{ action.label }}</span>
+            <svg v-if="modeStore.currentMode === action.mode" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="20 6 9 17 4 12" />
+            </svg>
+          </div>
+        </div>
       </div>
 
       <!-- 输入框和发送 -->
       <div class="input-row">
+        <!-- 上传按钮（仅文件转换模式显示） -->
+        <button
+          v-if="modeStore.currentMode === modeStore.MODES.FILE_CONVERT"
+          class="tool-btn"
+          title="上传文件"
+          @click="$emit('upload-click')"
+        >
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+            <polyline points="17 8 12 3 7 8" />
+            <line x1="12" y1="3" x2="12" y2="15" />
+          </svg>
+        </button>
+        <!-- 语音输入按钮（始终显示） -->
+        <button
+          class="tool-btn"
+          :class="{ active: isVoiceRecording }"
+          title="语音输入"
+          @click="toggleVoice"
+        >
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+            <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+            <line x1="12" y1="19" x2="12" y2="23" />
+            <line x1="8" y1="23" x2="16" y2="23" />
+          </svg>
+        </button>
         <textarea
           v-model="messageInput"
           class="input-box"
@@ -793,39 +968,115 @@ function handleFileAction(message) {
   background: #fff;
 }
 
-.quick-actions {
-  display: flex;
-  gap: 8px;
+/* 模式选择下拉菜单 */
+.mode-selector {
+  position: relative;
   margin-bottom: 10px;
-  flex-wrap: wrap;
+  width: fit-content;
 }
 
-.action-btn {
-  padding: 4px 12px;
+.mode-selector-trigger {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
   border: 1px solid #ddd;
   background: #fff;
-  border-radius: 14px;
-  font-size: 12px;
+  border-radius: 6px;
+  font-size: 13px;
   color: #666;
   cursor: pointer;
   transition: all 0.15s;
 }
 
-.action-btn:hover {
+.mode-selector-trigger:hover {
   border-color: #409eff;
   color: #409eff;
 }
 
-.action-btn.active {
-  background: #409eff;
+.mode-selector-trigger.open {
   border-color: #409eff;
-  color: #fff;
+  color: #409eff;
+}
+
+.mode-selector-trigger svg {
+  transition: transform 0.2s;
+}
+
+.mode-selector-trigger.open svg {
+  transform: rotate(180deg);
+}
+
+.mode-dropdown {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  background: #fff;
+  border: 1px solid #e8e8e8;
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  min-width: 160px;
+  padding: 4px;
+  z-index: 100;
+}
+
+.mode-dropdown-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  font-size: 13px;
+  color: #333;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.mode-dropdown-item:hover {
+  background: #f5f7fa;
+}
+
+.mode-dropdown-item.active {
+  background: #ecf5ff;
+  color: #409eff;
 }
 
 .input-row {
   display: flex;
-  gap: 8px;
+  gap: 6px;
   align-items: flex-end;
+}
+
+/* 工具按钮（上传/语音） */
+.tool-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: none;
+  background: #f5f5f5;
+  border-radius: 8px;
+  cursor: pointer;
+  color: #666;
+  flex-shrink: 0;
+  transition: all 0.15s;
+}
+
+.tool-btn:hover {
+  background: #e8e8e8;
+  color: #409eff;
+}
+
+.tool-btn.active {
+  background: #f56c6c;
+  color: #fff;
+  animation: voice-pulse 1.2s infinite;
+}
+
+@keyframes voice-pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.05); }
 }
 
 .input-box {

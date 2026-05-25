@@ -9,7 +9,6 @@ import normalizeExtractData from '../utils/normalizeExtractData'
 import getConfig from '../config/index'
 import SessionList from './SessionList.vue'
 import Chatbot from './Chatbot.vue'
-import FileUpload from './FileUpload.vue'
 import FilePreview from './FilePreview.vue'
 import FileSummaryView from './FileSummaryView.vue'
 import AssessmentListView from './AssessmentListView.vue'
@@ -50,22 +49,9 @@ watch([() => fileStore.activePreviewFileId, () => fileStore.showSummaryView, () 
   isMaximized.value = !!previewId || summary || assessment
 })
 
-// 监听文件转换模式切换
+// 监听文件转换模式：自动最大化/展开侧边栏
 watch(() => modeStore.currentMode, (mode) => {
   if (mode === modeStore.MODES.FILE_CONVERT) {
-    // 在聊天流中添加上传引导消息
-    chatStore.addMessage({
-      role: 'assistant',
-      content: '已进入文件转换模式。请上传需要转换的文件：',
-      time: getCurrentTime(),
-      noFeedback: true,
-    })
-    chatStore.addMessage({
-      role: 'assistant',
-      type: 'file_upload',
-      uploadPrompt: true,
-    })
-    scrollToBottom()
     isMaximized.value = true
     showSidebar.value = true
   }
@@ -509,6 +495,45 @@ function handleCancelUpload() {
   modeStore.switchMode(modeStore.MODES.CUSTOMER_SERVICE)
 }
 
+// 上传按钮点击 → 触发隐藏的文件输入
+function handleUploadClick() {
+  const input = document.getElementById('file-upload-input')
+  if (input) input.click()
+}
+
+// 文件选择后的处理
+async function handleFileSelect(e) {
+  const files = Array.from(e.target.files)
+  if (files.length === 0) return
+  e.target.value = ''
+
+  const { uploadFilesToOSS } = await import('../utils/fileUploader')
+  try {
+    const result = await uploadFilesToOSS(files, (p) => {
+      // 可选：进度提示
+    })
+    if (result.uploaded.length > 0) {
+      handleUploadComplete({ uploaded: result.uploaded, rejected: result.rejected })
+    }
+    if (result.rejected.length > 0) {
+      const reasons = result.rejected.map((r) => `${r.fileName}: ${r.reason}`).join('\n')
+      chatStore.addMessage({
+        role: 'system',
+        content: `以下文件未上传：${reasons}`,
+        time: getCurrentTime(),
+      })
+      scrollToBottom()
+    }
+  } catch (err) {
+    chatStore.addMessage({
+      role: 'system',
+      content: '上传失败：' + (err.message || ''),
+      time: getCurrentTime(),
+    })
+    scrollToBottom()
+  }
+}
+
 // 文件列表操作
 function handleFileAction(action) {
   if (action.type === 'upload-complete') {
@@ -610,7 +635,16 @@ const activeFileName = computed(() => {
       <div class="content-body">
         <!-- 聊天核心组件（始终存在） -->
         <div class="chat-area-wrapper">
-          <Chatbot @file-action="handleFileAction" />
+          <Chatbot @file-action="handleFileAction" @upload-click="handleUploadClick" />
+          <!-- 隐藏的文件上传输入 -->
+          <input
+            id="file-upload-input"
+            type="file"
+            :accept="config.allowedFileTypes.join(',')"
+            multiple
+            style="display: none"
+            @change="handleFileSelect"
+          />
         </div>
         <!-- 文件预览编辑组件（有数据时才展示，与聊天区左右分屏） -->
         <div v-if="fileStore.showSummaryView" class="preview-area">

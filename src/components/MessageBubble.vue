@@ -24,6 +24,23 @@ const htmlContent = computed(() => {
   return ''
 })
 
+const thoughtHtml = computed(() => {
+  if (props.message.thoughtContent) {
+    return renderMarkdown(props.message.thoughtContent)
+  }
+  return ''
+})
+
+const showThoughts = computed(() => {
+  return props.message.thoughtContent && props.message.thoughtContent.length > 0
+})
+
+const thoughtsCollapsed = ref(true)
+
+function toggleThoughts() {
+  thoughtsCollapsed.value = !thoughtsCollapsed.value
+}
+
 const feedbackState = ref(null) // 'like' | 'dislike' | null
 
 // 只有流式响应完成的 AI 消息才显示反馈组件
@@ -211,6 +228,21 @@ function getStatusType(status) {
 
     <!-- AI 回复 -->
     <template v-else-if="message.role === 'assistant'">
+      <!-- 思考过程（可折叠） -->
+      <template v-if="showThoughts && message.role === 'assistant'">
+        <div class="thought-section">
+          <button class="thought-toggle" @click="toggleThoughts">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" :class="{ rotated: !thoughtsCollapsed }">
+              <polyline points="9 18 15 12 9 6" />
+            </svg>
+            <span>思考过程</span>
+          </button>
+          <div v-show="!thoughtsCollapsed" class="thought-content">
+            <div class="thought-content-inner markdown-body" v-html="thoughtHtml" />
+          </div>
+        </div>
+      </template>
+
       <div
         class="bubble-content ai-content markdown-body"
         v-html="htmlContent"
@@ -275,7 +307,11 @@ function getStatusType(status) {
 
     <!-- 系统消息 -->
     <template v-else-if="message.role === 'system'">
-      <div class="system-msg">{{ message.content }}</div>
+      <div class="system-msg">
+        <div class="system-msg-line" />
+        <span class="system-msg-text">{{ message.content }}</span>
+        <div class="system-msg-line" />
+      </div>
     </template>
 
     <!-- 文件上传记录 -->
@@ -329,6 +365,8 @@ function getStatusType(status) {
 
 .message-bubble.system {
   align-items: center;
+  margin-top: 4px;
+  margin-bottom: 4px;
 }
 
 .bubble-content {
@@ -427,6 +465,65 @@ function getStatusType(status) {
   font-weight: 600;
 }
 
+/* 思考过程区域 */
+.thought-section {
+  background: #f8f6ff;
+  border: 1px solid #e8e2f5;
+  border-radius: 8px;
+  margin-bottom: 8px;
+  overflow: hidden;
+}
+
+.thought-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 8px 12px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 13px;
+  color: #7c6cb0;
+  transition: background 0.15s;
+}
+
+.thought-toggle:hover {
+  background: rgba(124, 108, 176, 0.08);
+}
+
+.thought-toggle svg {
+  transition: transform 0.2s;
+}
+
+.thought-toggle svg.rotated {
+  transform: rotate(90deg);
+}
+
+.thought-content {
+  border-top: 1px solid #e8e2f5;
+  padding: 10px 12px;
+}
+
+.thought-content-inner {
+  font-size: 13px;
+  color: #666;
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
+
+.thought-content-inner :deep(p) {
+  margin: 4px 0;
+}
+
+.thought-content-inner :deep(p:first-child) {
+  margin-top: 0;
+}
+
+.thought-content-inner :deep(p:last-child) {
+  margin-bottom: 0;
+}
+
 .message-time {
   font-size: 11px;
   color: #bbb;
@@ -434,13 +531,27 @@ function getStatusType(status) {
   padding-left: 4px;
 }
 
+/* 系统消息（模式切换提示） */
 .system-msg {
-  background: #fff7e6;
-  color: #fa8c16;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+  width: 100%;
+}
+
+.system-msg-line {
+  flex: 1;
+  height: 1px;
+  background: #e8e8e8;
+  min-width: 20px;
+}
+
+.system-msg-text {
   font-size: 12px;
-  padding: 6px 14px;
-  border-radius: 12px;
-  border: 1px solid #ffe7ba;
+  color: #999;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 /* 文件上传记录 */
