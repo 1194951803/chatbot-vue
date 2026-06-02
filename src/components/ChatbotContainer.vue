@@ -177,7 +177,7 @@ function startBatchParse(fileListMsg) {
   // 首个解析成功的文件自动打开右侧预览（每次批量解析仅触发一次）
   let firstPreviewShown = false
 
-  currentParseController = batchParseFiles(parseFiles, {
+  currentParseController = batchParseFiles(parseFiles, sessionStore.currentSessionId, {
     onFile: (data) => {
       const { index, success, errorMessage } = data
       let structuredData = data.structuredData ?? data.structured_data ?? data.data ?? data.result

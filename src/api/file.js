@@ -183,7 +183,7 @@ function createStreamProcessor(callbacks) {
 /**
  * 批量解析文件（SSE 流式响应）
  */
-export function batchParseFiles(files, callbacks) {
+export function batchParseFiles(files, chatSessionId, callbacks) {
   const controller = new AbortController()
 
   const url = '/ai/api/file/batch/parse'
@@ -195,7 +195,7 @@ export function batchParseFiles(files, callbacks) {
       const response = await fetch(fullUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(files),
+        body: JSON.stringify({ files, chatSessionId }),
         signal: controller.signal,
       })
 
